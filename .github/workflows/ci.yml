@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  lint:
+    name: Lint (rustfmt + clippy)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libadwaita-1-dev \
+            librsvg2-dev libcairo2-dev libglib2.0-dev \
+            libdbus-1-dev libxkbcommon-dev libxcb1-dev \
+            libxcb-randr0-dev libxcb-xkb-dev libxcb-xfixes0-dev \
+            libxcb-shape0-dev libxcb-render0-dev libxcb-xinput-dev \
+            libasound2-dev libpulse-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --no-deps -- -D warnings
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libadwaita-1-dev \
+            librsvg2-dev libcairo2-dev libglib2.0-dev \
+            libdbus-1-dev libxkbcommon-dev libxcb1-dev \
+            libxcb-randr0-dev libxcb-xkb-dev libxcb-xfixes0-dev \
+            libxcb-shape0-dev libxcb-render0-dev libxcb-xinput-dev \
+            libasound2-dev libpulse-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test (no X-server crates)
+        # Whole workspace except the GUI binary; the X-server-bound smoke
+        # test in xxkb-daemon self-skips when $DISPLAY / XXKB_TEST_XVFB
+        # are unset.
+        run: cargo test --workspace --exclude xxkb-configurator
+
+  xvfb-integration:
+    name: X11 integration (Xvfb)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libadwaita-1-dev \
+            librsvg2-dev libcairo2-dev libglib2.0-dev \
+            libdbus-1-dev libxkbcommon-dev libxcb1-dev \
+            libxcb-randr0-dev libxcb-xkb-dev libxcb-xfixes0-dev \
+            libxcb-shape0-dev libxcb-render0-dev libxcb-xinput-dev \
+            libasound2-dev libpulse-dev pkg-config \
+            xvfb xdotool wmctrl x11-utils dbus-x11 xkb-data setxkbmap
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build daemon
+        run: cargo build -p xxkb-daemon --release
+      - name: Run integration tests under Xvfb
+        run: |
+          xvfb-run -a --server-args='-screen 0 1920x1080x24' \
+            bash tests/xvfb/run_all.sh
+
+  package-deb:
+    name: Build .deb
+    runs-on: ubuntu-22.04
+    needs: [lint, unit]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libadwaita-1-dev \
+            librsvg2-dev libcairo2-dev libglib2.0-dev \
+            libdbus-1-dev libxkbcommon-dev libxcb1-dev \
+            libxcb-randr0-dev libxcb-xkb-dev libxcb-xfixes0-dev \
+            libxcb-shape0-dev libxcb-render0-dev libxcb-xinput-dev \
+            libasound2-dev libpulse-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Build .deb
+        run: |
+          cargo deb -p xxkb-daemon --no-build --output dist/xxkb-daemon.deb || \
+            cargo deb -p xxkb-daemon --output dist/xxkb-daemon.deb
+          cargo deb -p xxkb-configurator --output dist/xxkb-configurator.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-packages
+          path: dist/*.deb
+
+  smoke-de:
+    name: DE smoke (${{ matrix.de }})
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [package-deb]
+    strategy:
+      fail-fast: false
+      matrix:
+        de: [xfce, mate, lxde]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb-packages
+          path: dist
+      - name: Build smoke image
+        run: docker build -f tests/docker/Dockerfile.${{ matrix.de }} -t xxkb-smoke-${{ matrix.de }} .
+      - name: Run smoke
+        run: docker run --rm -v "$PWD/dist:/dist" xxkb-smoke-${{ matrix.de }} /smoke.sh

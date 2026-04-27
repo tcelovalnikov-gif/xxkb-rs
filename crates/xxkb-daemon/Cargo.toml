@@ -1,0 +1,55 @@
+[package]
+name = "xxkb-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "xxkbd — keyboard layout indicator daemon."
+
+[[bin]]
+name = "xxkbd"
+path = "src/main.rs"
+
+[dependencies]
+xxkb-core = { workspace = true }
+xxkb-config = { workspace = true }
+xxkb-x11 = { workspace = true }
+xxkb-indicators = { workspace = true }
+xxkb-sound = { workspace = true }
+xxkb-dbus = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+zbus = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+x11rb = { workspace = true }
+
+[package.metadata.deb]
+maintainer = "xxkb-rs contributors"
+copyright = "2026, xxkb-rs contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = """
+xxkbd is a small, configurable keyboard-layout indicator and switcher \
+for X11 sessions. It draws per-display flag indicators and per-window \
+indicators on the title bar, supports multi-monitor layouts and \
+remembers the layout per window."""
+depends = "$auto, libgtk-4-1, libadwaita-1-0, librsvg2-2, libcairo2, libpulse0, libasound2"
+section = "x11"
+priority = "optional"
+assets = [
+    ["target/release/xxkbd", "usr/bin/", "755"],
+    ["../../assets/desktop/xxkbd.desktop", "etc/xdg/autostart/", "644"],
+    ["../../assets/icons/", "usr/share/xxkb/icons/", "644"],
+    ["../../assets/sounds/click.ogg", "usr/share/xxkb/sounds/", "644"],
+    ["../../packaging/systemd/xxkbd.service", "usr/lib/systemd/user/", "644"],
+]

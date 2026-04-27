@@ -1,0 +1,22 @@
+[package]
+name = "xxkb-x11"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "X11 backend for xxkb-rs (XKB, RandR, window tracking) using x11rb."
+
+[dependencies]
+xxkb-core = { workspace = true }
+xxkb-config = { workspace = true }
+xxkb-indicators = { workspace = true }
+x11rb = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

@@ -1,0 +1,21 @@
+[package]
+name = "xxkb-dbus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "D-Bus service for xxkb-rs (org.xxkb.Daemon1)."
+
+[dependencies]
+xxkb-core = { workspace = true }
+xxkb-config = { workspace = true }
+zbus = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

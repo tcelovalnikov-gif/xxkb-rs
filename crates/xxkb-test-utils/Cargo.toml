@@ -1,0 +1,19 @@
+[package]
+name = "xxkb-test-utils"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Mocks and fixtures for xxkb-rs."
+publish = false
+
+[dependencies]
+xxkb-core = { workspace = true }
+xxkb-x11 = { workspace = true }
+xxkb-indicators = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

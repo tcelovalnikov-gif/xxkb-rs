@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/xxkb-core",
+    "crates/xxkb-config",
+    "crates/xxkb-config-state",
+    "crates/xxkb-x11",
+    "crates/xxkb-indicators",
+    "crates/xxkb-sound",
+    "crates/xxkb-dbus",
+    "crates/xxkb-daemon",
+    "crates/xxkb-configurator",
+    "crates/xxkb-test-utils",
+    "crates/xxkb-migrate",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+# Note: nightly-stable behaviour is exercised via toolchain pin; MSRV is conservative at 1.85.
+license = "MIT"
+authors = ["xxkb-rs contributors"]
+repository = "https://github.com/tcelovalnikov-gif/xxkb-rs"
+homepage = "https://github.com/tcelovalnikov-gif/xxkb-rs"
+description = "Modernized keyboard layout indicator and switcher for X11 / GTK4"
+keywords = ["xkb", "keyboard", "layout", "x11", "indicator"]
+categories = ["gui", "os::linux-apis"]
+
+[workspace.dependencies]
+# Internal crates
+xxkb-core = { path = "crates/xxkb-core" }
+xxkb-config = { path = "crates/xxkb-config" }
+xxkb-config-state = { path = "crates/xxkb-config-state" }
+xxkb-x11 = { path = "crates/xxkb-x11" }
+xxkb-indicators = { path = "crates/xxkb-indicators" }
+xxkb-sound = { path = "crates/xxkb-sound" }
+xxkb-dbus = { path = "crates/xxkb-dbus" }
+xxkb-test-utils = { path = "crates/xxkb-test-utils" }
+
+# Shared external dependencies (single version policy across the workspace).
+serde = { version = "1.0", features = ["derive"] }
+serde_with = "3.7"
+toml = "0.8"
+figment = { version = "0.10", features = ["toml", "env"] }
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+globset = "0.4"
+notify = "6.1"
+notify-debouncer-mini = "0.4"
+parking_lot = "0.12"
+once_cell = "1.19"
+dirs = "5.0"
+shellexpand = "3.1"
+indexmap = { version = "2.2", features = ["serde"] }
+tokio = { version = "1.36", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+futures = "0.3"
+async-trait = "0.1"
+proptest = "1.4"
+pretty_assertions = "1.4"
+tempfile = "3.10"
+
+# X11 (pure-Rust connection by default — no libxcb FFI required)
+x11rb = { version = "0.13", default-features = false, features = ["randr", "xkb", "xfixes", "xinput", "render", "shape", "cursor"] }
+
+# Drawing / icons
+# Pure-Rust SVG → BGRA pixel buffer (no system C deps). Default for the daemon.
+resvg = { version = "0.47", default-features = false }
+usvg = { version = "0.47", default-features = false }
+tiny-skia = "0.12"
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "bmp"] }
+# Optional cairo+librsvg path (only enabled by the configurator GUI).
+cairo-rs = { version = "0.19", features = ["xcb", "png"] }
+librsvg = "2.57"
+
+# Audio
+rodio = { version = "0.17", default-features = false, features = ["symphonia-vorbis", "symphonia-mp3", "symphonia-wav"] }
+
+# D-Bus
+zbus = { version = "4.1", default-features = false, features = ["tokio"] }
+
+# GTK4 (used in xxkb-configurator and for the "save?" dialog the daemon spawns)
+gtk4 = { version = "0.8", features = ["v4_10"] }
+adw = { package = "libadwaita", version = "0.6", features = ["v1_4"] }
+glib = "0.19"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true

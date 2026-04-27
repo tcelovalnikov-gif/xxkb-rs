@@ -1,0 +1,26 @@
+[package]
+name = "xxkb-sound"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Layout-change sound for xxkb-rs (rodio)."
+
+[dependencies]
+xxkb-config = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+[features]
+# rodio playback. Requires libasound2-dev on Linux.
+default = []
+rodio-playback = ["dep:rodio"]
+
+[dependencies.rodio]
+workspace = true
+optional = true
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

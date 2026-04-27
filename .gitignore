@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+/dist
+/packaging/debian/.debhelper
+/packaging/debian/files
+/packaging/debian/*.substvars
+/packaging/debian/debhelper-build-stamp
+*.deb

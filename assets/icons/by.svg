@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 30">
+  <!-- Simplified Belarusian flag: red, green, with a white hoist stripe. -->
+  <rect width="60" height="20" y="0"  fill="#D22730"/>
+  <rect width="60" height="10" y="20" fill="#007C30"/>
+  <rect width="6"  height="30" x="0"  fill="#FFFFFF"/>
+</svg>

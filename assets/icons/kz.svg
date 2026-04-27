@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 30">
+  <rect width="60" height="30" fill="#00ABC9"/>
+  <!-- Stylized sun -->
+  <circle cx="30" cy="15" r="5" fill="#FFCD00"/>
+</svg>

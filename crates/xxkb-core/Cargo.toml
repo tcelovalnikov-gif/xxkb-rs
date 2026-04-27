@@ -1,0 +1,19 @@
+[package]
+name = "xxkb-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Pure-logic core for xxkb-rs (layout state, window registry, rules, monitor layout). No I/O."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+globset = { workspace = true }
+indexmap = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+pretty_assertions = { workspace = true }

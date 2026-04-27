@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 30">
+  <!-- Simplified Union Jack: white field, blue saltire+cross overlaid with red. -->
+  <rect width="60" height="30" fill="#FFFFFF"/>
+  <!-- Blue diagonals (saltire) -->
+  <path d="M0,0 L60,30 M60,0 L0,30" stroke="#012169" stroke-width="6"/>
+  <!-- White cross outline -->
+  <path d="M30,0 V30 M0,15 H60" stroke="#FFFFFF" stroke-width="10"/>
+  <!-- Red cross of St. George -->
+  <path d="M30,0 V30 M0,15 H60" stroke="#C8102E" stroke-width="6"/>
+</svg>

@@ -26,6 +26,58 @@ pub struct FrameExtents {
     pub bottom: u32,
 }
 
+impl FrameExtents {
+    /// Synthesise frame extents from the geometry of the WM-supplied
+    /// *frame* window and the *client* window's geometry in root
+    /// coordinates.
+    ///
+    /// This is the EWMH-fallback path: some WMs (older Mutter, some
+    /// xmonad / dwm builds, IceWM in nodecor mode) do not advertise
+    /// `_NET_FRAME_EXTENTS`. The daemon walks the parent chain of
+    /// the client window with `QueryTree`, finds the immediate child
+    /// of the root (the WM's reparenting container), reads its
+    /// geometry, and feeds both rectangles here. The resulting
+    /// extents are good enough to keep the per-window indicator
+    /// inside the title bar on every WM that reparents at all.
+    ///
+    /// Inputs are signed `i32` (root coords / sizes can be cast
+    /// back). Negative deltas — which would only happen under buggy
+    /// WMs — are clamped to zero so we never fail open.
+    #[must_use]
+    pub fn from_frame_and_client(
+        frame_origin: Point,
+        frame_width: u32,
+        frame_height: u32,
+        client_origin: Point,
+        client_width: u32,
+        client_height: u32,
+    ) -> Self {
+        let fw = i32::try_from(frame_width).unwrap_or(0);
+        let fh = i32::try_from(frame_height).unwrap_or(0);
+        let cw = i32::try_from(client_width).unwrap_or(0);
+        let ch = i32::try_from(client_height).unwrap_or(0);
+
+        let left = (client_origin.x - frame_origin.x).max(0) as u32;
+        let top = (client_origin.y - frame_origin.y).max(0) as u32;
+        let right = ((frame_origin.x + fw) - (client_origin.x + cw)).max(0) as u32;
+        let bottom = ((frame_origin.y + fh) - (client_origin.y + ch)).max(0) as u32;
+
+        Self {
+            left,
+            right,
+            top,
+            bottom,
+        }
+    }
+
+    /// True if all four borders are zero. Useful for "is the WM
+    /// undecorated for this window?" decisions in the daemon.
+    #[must_use]
+    pub const fn is_zero(&self) -> bool {
+        self.left == 0 && self.right == 0 && self.top == 0 && self.bottom == 0
+    }
+}
+
 /// Configured offset for the per-window indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offset {
@@ -134,5 +186,94 @@ mod tests {
             10,
         );
         assert_eq!(p, Point::new(500 - 20 - 10, 0));
+    }
+
+    /// Typical Mutter-style decoration: title bar 28 px, side
+    /// borders 1 px, bottom border 1 px. Frame is at (100, 200);
+    /// client lives offset by (1, 28) inside the frame.
+    #[test]
+    fn synth_extents_recovers_typical_mutter_decoration() {
+        let extents = FrameExtents::from_frame_and_client(
+            Point::new(100, 200),
+            802,
+            629,
+            Point::new(101, 228),
+            800,
+            600,
+        );
+        assert_eq!(
+            extents,
+            FrameExtents {
+                left: 1,
+                right: 1,
+                top: 28,
+                bottom: 1,
+            }
+        );
+    }
+
+    /// Tiling WM that doesn't reparent (xmonad in noBorders mode):
+    /// frame == client, so all extents are zero. Must not panic
+    /// and must not produce phantom extents.
+    #[test]
+    fn synth_extents_for_undecorated_window_is_zero() {
+        let extents = FrameExtents::from_frame_and_client(
+            Point::new(0, 0),
+            1920,
+            1080,
+            Point::new(0, 0),
+            1920,
+            1080,
+        );
+        assert_eq!(extents, FrameExtents::default());
+        assert!(extents.is_zero());
+    }
+
+    /// Buggy WM that reports the frame window *smaller* than the
+    /// client (shouldn't happen, but seen in the wild on broken
+    /// XWayland surfaces). We clamp to zero — never produce
+    /// negative numbers in `u32`.
+    #[test]
+    fn synth_extents_clamps_negative_deltas_to_zero() {
+        let extents = FrameExtents::from_frame_and_client(
+            Point::new(50, 50),
+            100,
+            100,
+            Point::new(40, 40),
+            120,
+            120,
+        );
+        // Frame is (50,50)..(150,150); client is (40,40)..(160,160)
+        // — client overhangs frame on every side. All extents
+        // clamp to zero.
+        assert_eq!(extents, FrameExtents::default());
+    }
+
+    /// Asymmetric decoration: thick left border (e.g. tiled vertical
+    /// title bar like in i3 nodecor with a bar). Verify each side
+    /// is computed independently.
+    #[test]
+    fn synth_extents_handles_asymmetric_decoration() {
+        let extents = FrameExtents::from_frame_and_client(
+            Point::new(0, 0),
+            100,
+            100,
+            Point::new(20, 5),
+            70,
+            85,
+        );
+        // left = 20-0 = 20
+        // top = 5-0 = 5
+        // right = (0+100) - (20+70) = 10
+        // bottom = (0+100) - (5+85) = 10
+        assert_eq!(
+            extents,
+            FrameExtents {
+                left: 20,
+                right: 10,
+                top: 5,
+                bottom: 10,
+            }
+        );
     }
 }

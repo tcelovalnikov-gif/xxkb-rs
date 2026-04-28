@@ -381,11 +381,25 @@ fn mouse_button_from_detail(detail: u8) -> MouseButton {
     }
 }
 
-/// Query a window's root-coords geometry and `_NET_FRAME_EXTENTS`.
+/// Query a window's root-coords geometry and frame extents.
 ///
-/// Returns the *client* origin (top-left of the inner area, in root coords),
-/// width, height, and frame extents. If the window doesn't have
-/// `_NET_FRAME_EXTENTS` set, frame defaults to all zeros.
+/// The frame extents are read in this order:
+/// 1. WM-advertised `_NET_FRAME_EXTENTS` property — the cheap, EWMH-
+///    compliant path that GNOME Mutter ≥ 3.32, KWin, Xfwm4 and
+///    Marco all support;
+/// 2. **EWMH fallback**: walk `QueryTree` up from the client until
+///    we hit the immediate child of the root (the WM's reparent
+///    container), `GetGeometry` on it, and synthesise extents from
+///    `frame_geom` vs `client_in_root` via
+///    [`FrameExtents::from_frame_and_client`]. Used on older
+///    Mutter, IceWM in nodecor mode, dwm, xmonad with `borderWidth`
+///    set, and any WM that just hasn't gotten around to setting
+///    the EWMH atom.
+/// 3. If even the parent walk fails (override-redirect, reparented
+///    directly to root, headless test setup), the extents stay
+///    zero — the per-window indicator will overlap the top of the
+///    client area, which is the same behaviour as the legacy xxkb
+///    on undecorated windows.
 fn read_window_geom<C: Connection>(
     conn: &C,
     root: Window,
@@ -404,14 +418,83 @@ fn read_window_geom<C: Connection>(
         .reply()
         .map_err(|e| X11Error::Other(format!("translate_coordinates reply: {e}")))?;
 
-    let frame = read_frame_extents(conn, w, net_frame_extents).unwrap_or_default();
+    let client_origin = Point::new(i32::from(translated.dst_x), i32::from(translated.dst_y));
+    let client_w = u32::from(geom.width);
+    let client_h = u32::from(geom.height);
+
+    let frame = match read_frame_extents(conn, w, net_frame_extents) {
+        Ok(fe) if !fe.is_zero() => fe,
+        // EWMH atom missing or all-zero: try the parent-walk fallback.
+        // We never propagate failure from the fallback — if it errors
+        // we just keep the zero extents, which is the legacy
+        // behaviour and matches what undecorated windows look like.
+        _ => synth_frame_extents(conn, root, w, client_origin, client_w, client_h)
+            .unwrap_or_default(),
+    };
 
     Ok(WindowGeom {
-        origin: Point::new(i32::from(translated.dst_x), i32::from(translated.dst_y)),
-        width: u32::from(geom.width),
-        height: u32::from(geom.height),
+        origin: client_origin,
+        width: client_w,
+        height: client_h,
         frame,
     })
+}
+
+/// Walk up the parent chain from `w` until we hit the immediate child
+/// of `root` — that is the WM-reparented frame window. Returns
+/// synthesised extents.
+///
+/// Errors are silently treated as "no frame found" by the caller; we
+/// only return `Ok` when we actually located a frame and its geometry.
+fn synth_frame_extents<C: Connection>(
+    conn: &C,
+    root: Window,
+    w: Window,
+    client_origin: Point,
+    client_w: u32,
+    client_h: u32,
+) -> Result<FrameExtents, X11Error> {
+    // Cap the walk to avoid pathological cycles. A reasonable WM
+    // chain is `client -> frame -> root`, so 8 hops is comfortable.
+    const MAX_DEPTH: usize = 8;
+
+    let mut current = w;
+    for _ in 0..MAX_DEPTH {
+        let tree = conn
+            .query_tree(current)
+            .map_err(|e| X11Error::Other(format!("query_tree: {e}")))?
+            .reply()
+            .map_err(|e| X11Error::Other(format!("query_tree reply: {e}")))?;
+
+        // Same window or a stale answer — abort.
+        if tree.parent == NONE || tree.parent == current {
+            return Ok(FrameExtents::default());
+        }
+        if tree.parent == root {
+            // `current` *is* the frame: get its geometry in root coords.
+            let fg = conn
+                .get_geometry(current)
+                .map_err(|e| X11Error::Other(format!("get_geometry frame: {e}")))?
+                .reply()
+                .map_err(|e| X11Error::Other(format!("get_geometry frame reply: {e}")))?;
+            let translated = conn
+                .translate_coordinates(current, root, 0, 0)
+                .map_err(|e| X11Error::Other(format!("translate frame: {e}")))?
+                .reply()
+                .map_err(|e| X11Error::Other(format!("translate frame reply: {e}")))?;
+            let frame_origin = Point::new(i32::from(translated.dst_x), i32::from(translated.dst_y));
+            return Ok(FrameExtents::from_frame_and_client(
+                frame_origin,
+                u32::from(fg.width),
+                u32::from(fg.height),
+                client_origin,
+                client_w,
+                client_h,
+            ));
+        }
+        current = tree.parent;
+    }
+    Ok(FrameExtents::default())
 }
 
 /// Read the WM-set `_NET_FRAME_EXTENTS` (CARDINAL[4] = left/right/top/bottom).

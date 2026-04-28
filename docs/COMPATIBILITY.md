@@ -31,7 +31,7 @@ issue if you do.
 | Cinnamon | ✅ Tested | ✅ Tested | ✅ Tested | Muffin WM. |
 | LXDE | 🟡 Mostly | ✅ Tested | ✅ Tested | Openbox places indicators slightly off when client-side decorations are mixed in; CSD windows fall back to a fixed offset. |
 | LXQt | 🟡 Untested | 🟡 Untested | 🟡 Untested | Should work via XWayland. |
-| GNOME (X11) | 🟡 Tested manually | ✅ Tested | ✅ Tested | Mutter is fine. Header-bar-heavy GTK apps have inconsistent `_NET_FRAME_EXTENTS`; per-window placement can drift. |
+| GNOME (X11) | 🟡 Tested manually | ✅ Tested | ✅ Tested | Mutter is fine. Header-bar-heavy GTK apps have inconsistent `_NET_FRAME_EXTENTS`; the **EWMH-fallback** (parent-walk via `QueryTree`) handles the missing-atom case, but CSD apps still report a zero frame and the indicator overlaps the header bar. |
 | KDE Plasma 5 (X11) | 🟡 Tested manually | ✅ Tested | ✅ Tested | KWin sometimes lies about frame extents during animation; we re-place on `ConfigureNotify`. |
 | KDE Plasma 6 (Wayland + XWayland) | 🟡 Tested manually | ✅ Tested | 🟡 Limited | Indicators show, but only for XWayland clients. Native-Wayland windows don't get a flag. |
 | i3 / sway-i3-mode (X11) | ✅ Tested | ✅ Tested | ✅ Tested | i3 reports clean frame extents. |
@@ -81,9 +81,11 @@ issue if you do.
   approach — a separate Wayland frontend would be a different
   product.
 * **CSD-only apps** (GTK4 native-decoration apps) report
-  `_NET_FRAME_EXTENTS = 0,0,0,0` and our placement falls back to
-  the configured offset. The flag still appears, but on top of the
-  client area rather than the title bar.
+  `_NET_FRAME_EXTENTS = 0,0,0,0` *and* are not reparented (the
+  client *is* the frame), so our EWMH-fallback also yields zero
+  extents. The flag still appears, but on top of the client
+  area rather than the title bar — the same behaviour as legacy
+  xxkb on undecorated windows.
 * **Multi-DPI sessions** (e.g. 1× external + 2× internal) use a
   single `size_px` for all outputs. Per-output scaling is on the
   TODO list.

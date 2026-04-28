@@ -67,7 +67,7 @@ crates so that each layer can be unit-tested in isolation.
 | `xxkb-core` | Pure logic, no I/O. `LayoutState`, `WindowRegistry`, `AppRules`, `MonitorLayout`, `IndicatorPlacement`. | unit + proptest |
 | `xxkb-config` | TOML schema, `figment` loader (defaults + file + filtered `XXKB_*` env), atomic save, validation. | unit |
 | `xxkb-config-state` | Editor-state for the GUI: `ConfigEditor` with dirty-tracking, baseline/current snapshots, validation. Blocking + async D-Bus client built on the typed `xxkb_dbus::DaemonProxy`. | unit |
-| `xxkb-x11` | All X11 traffic: XKB state, RandR, override-redirect indicator windows, paint-pixbuf, passive Ctrl-drag, `_NET_FRAME_EXTENTS`. Trait `Backend` is mockable. | unit + xvfb integration |
+| `xxkb-x11` | All X11 traffic: XKB state, RandR, override-redirect indicator windows, paint-pixbuf, passive Ctrl-drag, `_NET_FRAME_EXTENTS` + EWMH-fallback parent-walk via `QueryTree` for WMs that don't advertise the atom. Trait `Backend` is mockable. | unit + xvfb integration |
 | `xxkb-indicators` | SVG/PNG → BGRA pixmap (`resvg` + `tiny-skia` + `image`). `IconCache` keyed by `(name, size, border)`. Border drawing on top of the buffer. | unit |
 | `xxkb-sound` | Mode-vs-trigger policy (`should_play`), `SoundPlayer` trait, `MockPlayer` / `NullPlayer` / `RodioPlayer` (behind `rodio-playback`), `build_player()` factory. | unit |
 | `xxkb-dbus` | Canonical `org.xxkb.Daemon1` definition: `DaemonInterface` trait, `DaemonService` exporter, `Emitter` for signals, typed `DaemonProxy`. `is_daemon_present()` helper. | unit + p2p integration (`tests/roundtrip.rs`) |

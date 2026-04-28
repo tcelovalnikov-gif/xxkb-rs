@@ -192,7 +192,7 @@ async fn event_loop(
                     };
                     let sound_mode = cfg.lock().sound.mode;
                     player.play(sound_mode, trigger);
-                    repaint_main_indicators(backend, monitor_layout, cfg, icons, g).await;
+                    repaint_main_indicators(backend, cfg, icons, g).await;
                     repaint_all_per_window_indicators(backend, registry, cfg, icons, g).await;
                     if let Some(em) = emitter {
                         if let Err(e) = em.layout_changed(g.as_one_based(), last_active_wid).await {
@@ -341,6 +341,39 @@ async fn apply_per_window_indicator(
     Ok(())
 }
 
+/// Compute the set of outputs that should currently host a main
+/// indicator under the given config. Pure function: no I/O, no
+/// locking — easy to unit-test independently of the backend.
+fn target_main_outputs(
+    main: &xxkb_config::MainIndicatorConfig,
+    active: &[xxkb_core::monitors::Output],
+    primary_name: Option<&str>,
+) -> Vec<String> {
+    if !main.enable {
+        return Vec::new();
+    }
+    match main.mode {
+        MainIndicatorMode::PrimaryOnly => {
+            // If we know the primary, restrict to it. If we don't
+            // (Xvfb / multi-screen edge cases), fall back to "first
+            // active output" rather than dropping the indicator
+            // entirely — a silent no-show is the worst UX.
+            if let Some(name) = primary_name {
+                active
+                    .iter()
+                    .filter(|o| o.name.0 == name)
+                    .map(|o| o.name.0.clone())
+                    .collect()
+            } else {
+                active.iter().take(1).map(|o| o.name.0.clone()).collect()
+            }
+        }
+        MainIndicatorMode::AllDisplays => {
+            active.iter().map(|o| o.name.0.clone()).collect()
+        }
+    }
+}
+
 async fn place_initial_main_indicators(
     backend: &Arc<tokio::sync::Mutex<X11Backend>>,
     monitor_layout: &Arc<Mutex<MonitorLayout>>,
@@ -349,12 +382,38 @@ async fn place_initial_main_indicators(
     icons: &Arc<IconCache>,
 ) -> Result<()> {
     let main = cfg.lock().main_indicator.clone();
-    if !main.enable {
+    let outs: Vec<_> = monitor_layout.lock().active().cloned().collect();
+    let primary_name = monitor_layout.lock().primary().map(|p| p.name.0.clone());
+    let want: std::collections::HashSet<String> = target_main_outputs(
+        &main,
+        &outs,
+        primary_name.as_deref(),
+    )
+    .into_iter()
+    .collect();
+
+    // 1. Reconcile: destroy any indicator that should no longer exist
+    //    (mode flipped to primary_only, output unplugged, master
+    //    disable toggled).
+    let existing = backend
+        .lock()
+        .await
+        .main_indicator_outputs()
+        .await
+        .unwrap_or_default();
+    for name in existing {
+        if !want.contains(&name) {
+            if let Err(e) = backend.lock().await.remove_main_indicator(&name).await {
+                tracing::warn!(output = %name, error = %e, "failed to destroy stale main indicator");
+            }
+        }
+    }
+
+    if !main.enable || want.is_empty() {
         return Ok(());
     }
-    let outs: Vec<_> = monitor_layout.lock().active().cloned().collect();
-    let primary_only = matches!(main.mode, MainIndicatorMode::PrimaryOnly);
-    let primary_name = monitor_layout.lock().primary().map(|p| p.name.0.clone());
+
+    // 2. Place / repaint indicators for the desired set.
     let group = layout.lock().current();
     let buf = match flag::render_main(icons, &cfg.lock(), group) {
         Ok(b) => Some(b),
@@ -364,12 +423,8 @@ async fn place_initial_main_indicators(
         }
     };
     for o in outs {
-        if primary_only {
-            if let Some(name) = &primary_name {
-                if &o.name.0 != name {
-                    continue;
-                }
-            }
+        if !want.contains(&o.name.0) {
+            continue;
         }
         let p = monitor_layout.lock().position_for(&o, main.size_px);
         let _ = backend
@@ -390,7 +445,6 @@ async fn place_initial_main_indicators(
 
 async fn repaint_main_indicators(
     backend: &Arc<tokio::sync::Mutex<X11Backend>>,
-    monitor_layout: &Arc<Mutex<MonitorLayout>>,
     cfg: &Arc<Mutex<Config>>,
     icons: &Arc<IconCache>,
     group: Group,
@@ -402,12 +456,17 @@ async fn repaint_main_indicators(
             return;
         }
     };
-    let names: Vec<_> = monitor_layout
+    // Repaint only the indicators that *exist* on the server. This
+    // matters in `mode = primary_only`: the secondary outputs have
+    // no main window of ours, and trying to paint them would just
+    // log a warning per repaint.
+    let live = backend
         .lock()
-        .active()
-        .map(|o| o.name.0.clone())
-        .collect();
-    for name in names {
+        .await
+        .main_indicator_outputs()
+        .await
+        .unwrap_or_default();
+    for name in live {
         let _ = backend
             .lock()
             .await
@@ -570,5 +629,80 @@ impl DaemonInterface for DaemonHandle {
         let path = xxkb_config::config_path().map_err(|e| e.to_string())?;
         cfg.save_to(&path).map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use xxkb_config::{BorderConfig, MainIndicatorConfig, MainIndicatorMode};
+    use xxkb_core::monitors::{Output, OutputName, Rect};
+    use xxkb_core::Point;
+
+    use super::target_main_outputs;
+
+    fn out(name: &str, primary: bool, active: bool) -> Output {
+        Output {
+            name: OutputName::from(name),
+            geometry: Rect {
+                origin: Point::new(0, 0),
+                width: 1920,
+                height: 1080,
+            },
+            is_primary: primary,
+            is_active: active,
+        }
+    }
+
+    fn cfg(mode: MainIndicatorMode, enable: bool) -> MainIndicatorConfig {
+        MainIndicatorConfig {
+            enable,
+            mode,
+            size_px: 48,
+            border: BorderConfig::default(),
+            positions: Default::default(),
+        }
+    }
+
+    #[test]
+    fn target_all_displays_returns_every_active_output() {
+        let outs = vec![out("HDMI-1", true, true), out("DP-1", false, true)];
+        let got = target_main_outputs(
+            &cfg(MainIndicatorMode::AllDisplays, true),
+            &outs,
+            Some("HDMI-1"),
+        );
+        assert_eq!(got, vec!["HDMI-1".to_owned(), "DP-1".to_owned()]);
+    }
+
+    #[test]
+    fn target_primary_only_filters_to_primary() {
+        let outs = vec![out("HDMI-1", true, true), out("DP-1", false, true)];
+        let got = target_main_outputs(
+            &cfg(MainIndicatorMode::PrimaryOnly, true),
+            &outs,
+            Some("HDMI-1"),
+        );
+        assert_eq!(got, vec!["HDMI-1".to_owned()]);
+    }
+
+    /// On Xvfb the primary is sometimes unset. We must still place
+    /// *something* otherwise `mode = primary_only` would silently
+    /// produce no indicator at all in CI.
+    #[test]
+    fn target_primary_only_falls_back_to_first_active_when_no_primary() {
+        let outs = vec![out("VIRT-1", false, true), out("VIRT-2", false, true)];
+        let got = target_main_outputs(&cfg(MainIndicatorMode::PrimaryOnly, true), &outs, None);
+        assert_eq!(got, vec!["VIRT-1".to_owned()]);
+    }
+
+    #[test]
+    fn target_disable_returns_empty() {
+        let outs = vec![out("HDMI-1", true, true)];
+        let got = target_main_outputs(
+            &cfg(MainIndicatorMode::AllDisplays, false),
+            &outs,
+            Some("HDMI-1"),
+        );
+        assert!(got.is_empty());
     }
 }

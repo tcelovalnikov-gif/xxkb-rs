@@ -36,6 +36,18 @@ pub trait Backend: Send {
         size: u32,
     ) -> Result<(), X11Error>;
 
+    /// Destroy the main indicator on `output_name`, if one exists.
+    /// Idempotent: removing an indicator that was never placed (e.g.
+    /// `mode = primary_only` was active from the start) is a no-op.
+    async fn remove_main_indicator(&mut self, output_name: &str) -> Result<(), X11Error>;
+
+    /// Snapshot of the output names that currently have a main
+    /// indicator window mapped on the server. Used by the daemon to
+    /// decide which indicators to destroy when the mode flips from
+    /// `all_displays` to `primary_only` or when an output is
+    /// hot-unplugged.
+    async fn main_indicator_outputs(&mut self) -> Result<Vec<String>, X11Error>;
+
     /// Move (or create) the per-window indicator overlaid on `wid`.
     async fn place_window_indicator(
         &mut self,
@@ -138,6 +150,21 @@ impl Backend for X11Backend {
             .as_mut()
             .ok_or(X11Error::Other("not connected".into()))?
             .place_main_indicator(output_name, point, size)
+    }
+
+    async fn remove_main_indicator(&mut self, output_name: &str) -> Result<(), X11Error> {
+        self.inner
+            .as_mut()
+            .ok_or(X11Error::Other("not connected".into()))?
+            .remove_main_indicator(output_name)
+    }
+
+    async fn main_indicator_outputs(&mut self) -> Result<Vec<String>, X11Error> {
+        Ok(self
+            .inner
+            .as_mut()
+            .ok_or(X11Error::Other("not connected".into()))?
+            .main_indicator_outputs())
     }
 
     async fn place_window_indicator(
@@ -277,6 +304,20 @@ mod inner {
             self.windows
                 .lock()
                 .place_main(&*self.conn, screen, output_name, point, size)
+        }
+
+        pub fn remove_main_indicator(&self, output_name: &str) -> Result<(), X11Error> {
+            self.windows
+                .lock()
+                .remove_main(&*self.conn, output_name)
+        }
+
+        pub fn main_indicator_outputs(&self) -> Vec<String> {
+            self.windows
+                .lock()
+                .main_iter()
+                .map(|(n, _)| n.to_owned())
+                .collect()
         }
 
         pub fn place_window_indicator(

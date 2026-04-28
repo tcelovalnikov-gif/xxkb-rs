@@ -95,6 +95,24 @@ impl IndicatorWindowMgr {
         Ok(())
     }
 
+    /// Destroy the main indicator on `output_name`. Idempotent.
+    /// Used by the daemon when:
+    /// * the user toggles `mode` from `all_displays` to `primary_only`,
+    /// * an output is hot-unplugged via RandR.
+    pub fn remove_main<C: Connection>(
+        &mut self,
+        conn: &C,
+        output_name: &str,
+    ) -> Result<(), X11Error> {
+        if let Some(w) = self.main_per_output.remove(output_name) {
+            conn.destroy_window(w)
+                .map_err(|e| X11Error::Other(format!("destroy_window: {e}")))?;
+            conn.flush()
+                .map_err(|e| X11Error::Other(format!("flush: {e}")))?;
+        }
+        Ok(())
+    }
+
     /// Paint `buf` onto the existing main indicator for `output_name`.
     /// Returns `Ok(false)` if no such indicator exists yet.
     pub fn paint_main<C: Connection>(

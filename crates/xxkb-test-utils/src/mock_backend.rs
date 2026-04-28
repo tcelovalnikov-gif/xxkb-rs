@@ -17,6 +17,10 @@ pub struct MockBackend {
     calls: Arc<Mutex<Vec<MockCall>>>,
     current_group: Arc<Mutex<Group>>,
     outputs: Arc<Mutex<Vec<Output>>>,
+    /// Names of outputs with a main indicator currently "placed".
+    /// Mirrors what the real backend's `IndicatorWindowMgr` would
+    /// report so `main_indicator_outputs()` is honest in tests.
+    main_indicators: Arc<Mutex<Vec<String>>>,
     rx: Option<Receiver<BackendEvent>>,
     /// Public sender so tests can `send(BackendEvent)` to drive the daemon.
     pub event_tx: Sender<BackendEvent>,
@@ -35,6 +39,8 @@ pub enum MockCall {
     SetGroup(Group),
     /// `place_main_indicator(name, point, size)`.
     PlaceMain(String, Point, u32),
+    /// `remove_main_indicator(name)`.
+    RemoveMain(String),
     /// `place_window_indicator(wid, point, size)`.
     PlaceForWindow(WindowId, Point, u32),
     /// `remove_window_indicator(wid)`.
@@ -83,6 +89,7 @@ impl MockBackendBuilder {
             calls: Arc::new(Mutex::new(Vec::new())),
             current_group: Arc::new(Mutex::new(self.initial_group)),
             outputs: Arc::new(Mutex::new(self.outputs)),
+            main_indicators: Arc::new(Mutex::new(Vec::new())),
             rx: Some(rx),
             event_tx: tx,
         }
@@ -143,7 +150,23 @@ impl Backend for MockBackend {
         self.calls
             .lock()
             .push(MockCall::PlaceMain(output_name.to_owned(), point, size));
+        let mut inds = self.main_indicators.lock();
+        if !inds.iter().any(|n| n == output_name) {
+            inds.push(output_name.to_owned());
+        }
         Ok(())
+    }
+
+    async fn remove_main_indicator(&mut self, output_name: &str) -> Result<(), X11Error> {
+        self.calls
+            .lock()
+            .push(MockCall::RemoveMain(output_name.to_owned()));
+        self.main_indicators.lock().retain(|n| n != output_name);
+        Ok(())
+    }
+
+    async fn main_indicator_outputs(&mut self) -> Result<Vec<String>, X11Error> {
+        Ok(self.main_indicators.lock().clone())
     }
 
     async fn place_window_indicator(

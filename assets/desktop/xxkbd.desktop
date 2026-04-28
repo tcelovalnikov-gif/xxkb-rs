@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=xxkbd
+GenericName=Keyboard Layout Indicator
+Comment=Per-window keyboard layout indicator and switcher
+Comment[ru]=Индикатор и переключатель раскладки клавиатуры по окнам
+Exec=xxkbd
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;
+NoDisplay=false
+StartupNotify=false
+Keywords=keyboard;layout;xkb;indicator;
+X-GNOME-Autostart-enabled=true
+X-GNOME-AutoRestart=false
+OnlyShowIn=GNOME;XFCE;MATE;LXDE;LXQt;Cinnamon;Unity;X-Cinnamon;Pantheon;Budgie;

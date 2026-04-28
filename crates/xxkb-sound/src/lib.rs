@@ -10,10 +10,13 @@
 //! * `Both` — always play.
 //!
 //! The actual rodio playback lives behind the `rodio-playback` feature
-//! so we can compile and unit-test the policy logic without `libasound`.
+//! (enabled by default) so we can compile and unit-test the policy
+//! logic on systems without `libasound2-dev`.
 
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms, missing_docs)]
+
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use thiserror::Error;
@@ -25,10 +28,11 @@ pub enum SoundError {
     /// I/O error opening the sound file.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// Decoder error.
+    /// Decoder error (mostly: unknown / corrupt audio container).
     #[error("decode error: {0}")]
     Decode(String),
-    /// Audio sink unavailable.
+    /// Audio sink unavailable — usually means there is no ALSA / Pulse
+    /// device, or the user's session does not have access to one.
     #[error("audio sink: {0}")]
     Sink(String),
 }
@@ -39,7 +43,7 @@ pub enum SoundError {
 pub enum Trigger {
     /// User pressed a hotkey or clicked an indicator.
     Manual,
-    /// Programmatic switch (focus change).
+    /// Programmatic switch (focus change, daemon-initiated).
     Auto,
 }
 
@@ -57,12 +61,13 @@ pub const fn should_play(mode: SoundMode, trigger: Trigger) -> bool {
 }
 
 /// Trait so the daemon can swap a `MockPlayer` in tests.
-pub trait SoundPlayer: Send {
+pub trait SoundPlayer: Send + Sync {
     /// Play, taking mode and trigger into account.
     fn play(&self, mode: SoundMode, trigger: Trigger);
 }
 
-/// Test player that just records calls.
+/// Test player that just records `(mode, trigger)` calls for which
+/// [`should_play`] returned `true`.
 #[derive(Debug, Default)]
 pub struct MockPlayer {
     calls: Mutex<Vec<(SoundMode, Trigger)>>,
@@ -75,8 +80,8 @@ impl MockPlayer {
         Self::default()
     }
 
-    /// Snapshot of all `(mode, trigger)` pairs for which `play` was called
-    /// **and** the policy returned true.
+    /// Snapshot of all `(mode, trigger)` pairs for which `play` was
+    /// called **and** the policy returned `true`.
     #[must_use]
     pub fn calls(&self) -> Vec<(SoundMode, Trigger)> {
         self.calls.lock().clone()
@@ -91,36 +96,106 @@ impl SoundPlayer for MockPlayer {
     }
 }
 
+/// No-op player. Returned by [`build_player`] when the user has set
+/// `mode = "off"` or when audio device init fails on a headless box.
+#[derive(Debug, Default)]
+pub struct NullPlayer;
+
+impl SoundPlayer for NullPlayer {
+    fn play(&self, _: SoundMode, _: Trigger) {}
+}
+
+/// Built-in click — a 50 ms / 22.05 kHz / 16-bit mono sine envelope
+/// generated at repo bake time. About 2.2 KB. Decoded by rodio's
+/// `symphonia-wav` integration; no system C deps required.
+///
+/// Exposed as a `&[u8]` so callers don't have to know the file path.
+pub const BUILTIN_CLICK_WAV: &[u8] = include_bytes!("../../../assets/sounds/click.wav");
+
+/// Build the sound player to use based on the parsed config.
+///
+/// Resolution order for the audio buffer:
+/// 1. `cfg.file` if non-empty (read from disk),
+/// 2. otherwise [`BUILTIN_CLICK_WAV`].
+///
+/// On systems without an audio device — CI runners, headless KVM
+/// guests, GitHub Actions — `RodioPlayer::new` fails at
+/// `try_default()` and we fall back to [`NullPlayer`] with a single
+/// `WARN` line. The daemon stays usable; only the bell goes silent.
+///
+/// On `--no-default-features` builds (no `rodio-playback` feature)
+/// this function is still callable but always returns
+/// [`NullPlayer`].
+pub fn build_player(cfg_mode: SoundMode, cfg_file: &str) -> Arc<dyn SoundPlayer> {
+    if matches!(cfg_mode, SoundMode::Off) {
+        tracing::debug!("sound mode = off, using NullPlayer");
+        return Arc::new(NullPlayer);
+    }
+    #[cfg(feature = "rodio-playback")]
+    {
+        let path: Option<&std::path::Path> = if cfg_file.is_empty() {
+            None
+        } else {
+            Some(std::path::Path::new(cfg_file))
+        };
+        match rodio_player::RodioPlayer::new(path) {
+            Ok(p) => return Arc::new(p),
+            Err(e) => {
+                tracing::warn!(error = %e, "audio sink unavailable; falling back to silent player");
+                return Arc::new(NullPlayer);
+            }
+        }
+    }
+    #[cfg(not(feature = "rodio-playback"))]
+    {
+        let _ = cfg_file;
+        tracing::warn!("xxkb-sound built without rodio-playback feature; sound will not play");
+        Arc::new(NullPlayer)
+    }
+}
+
 #[cfg(feature = "rodio-playback")]
 mod rodio_player {
-    use std::{io::Cursor, path::PathBuf};
+    use std::io::Cursor;
+    use std::path::Path;
+    use std::sync::Arc;
 
-    use parking_lot::Mutex;
-
-    use super::{should_play, SoundError, SoundPlayer, Trigger};
+    use rodio::{OutputStream, OutputStreamHandle};
     use xxkb_config::SoundMode;
 
-    /// Real player, holds a `rodio::OutputStream` for the lifetime of the daemon.
+    use super::{should_play, SoundError, SoundPlayer, Trigger, BUILTIN_CLICK_WAV};
+
+    /// Real player. Holds a single live `OutputStream` for the
+    /// lifetime of the daemon and re-uses its handle to spawn
+    /// `Sink`s for each click. We do *not* call `try_default()`
+    /// per-click — it allocates a fresh ALSA capture, which is what
+    /// caused the original implementation to occasionally drop the
+    /// first click after a long idle period.
     pub struct RodioPlayer {
-        stream: Mutex<rodio::OutputStream>,
-        _stream_handle: rodio::OutputStreamHandle,
-        sound_bytes: Vec<u8>,
+        // `_stream` is held purely for its `Drop` lifetime: dropping
+        // the stream stops the audio thread. We never read from it
+        // directly.
+        _stream: OutputStream,
+        handle: OutputStreamHandle,
+        /// Pre-loaded audio buffer. Cheap to clone per click since
+        /// `Arc`'s clone is just a refcount bump.
+        bytes: Arc<Vec<u8>>,
     }
 
     impl RodioPlayer {
-        /// Build, loading sound bytes from `path` (or built-in default if empty).
-        pub fn new(path: Option<PathBuf>) -> Result<Self, SoundError> {
+        /// Build, optionally loading sound bytes from `path`. Falls
+        /// back to the built-in click if `path` is `None`.
+        pub fn new(path: Option<&Path>) -> Result<Self, SoundError> {
             let (stream, handle) =
-                rodio::OutputStream::try_default().map_err(|e| SoundError::Sink(e.to_string()))?;
-            let sound_bytes = if let Some(p) = path {
-                std::fs::read(p)?
-            } else {
-                BUILTIN_CLICK.to_vec()
+                OutputStream::try_default().map_err(|e| SoundError::Sink(e.to_string()))?;
+            let bytes = match path {
+                Some(p) => std::fs::read(p)?,
+                None => BUILTIN_CLICK_WAV.to_vec(),
             };
             Ok(Self {
-                stream: Mutex::new(stream),
-                _stream_handle: handle,
-                sound_bytes,
+                _stream: stream,
+                handle,
+                bytes: Arc::new(bytes),
             })
         }
     }
@@ -130,22 +205,33 @@ mod rodio_player {
             if !should_play(mode, trigger) {
                 return;
             }
-            let cursor = Cursor::new(self.sound_bytes.clone());
-            let _stream = self.stream.lock();
-            // Re-create handle each time; rodio::Sink owns playback.
-            if let Ok((_, handle)) = rodio::OutputStream::try_default() {
-                if let Ok(decoder) = rodio::Decoder::new(cursor) {
-                    if let Ok(sink) = rodio::Sink::try_new(&handle) {
-                        sink.append(decoder);
-                        sink.detach();
-                    }
+            // Cursor needs `T: AsRef<[u8]>`. `Arc<Vec<u8>>` doesn't
+            // satisfy that directly, so we deref+clone the inner
+            // Vec here. The buffer is ~2 KB so the copy is cheap;
+            // a pre-decoded `Source` cache would be faster but adds
+            // more state to manage and the ergonomics aren't worth
+            // it for a 50 ms click.
+            let cursor = Cursor::new(self.bytes.as_ref().clone());
+            let decoder = match rodio::Decoder::new(cursor) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to decode click sample");
+                    return;
+                }
+            };
+            match rodio::Sink::try_new(&self.handle) {
+                Ok(sink) => {
+                    sink.append(decoder);
+                    // Detach so dropping the local `sink` doesn't
+                    // truncate playback at the closing brace.
+                    sink.detach();
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to acquire audio sink");
                 }
             }
         }
     }
-
-    // 1024 bytes of silence at 44.1 kHz mono — replaced at build time.
-    const BUILTIN_CLICK: &[u8] = include_bytes!("../../../assets/sounds/click.ogg");
 }
 
 #[cfg(feature = "rodio-playback")]
@@ -187,5 +273,36 @@ mod tests {
         p.play(SoundMode::Both, Trigger::Manual);
         p.play(SoundMode::Both, Trigger::Auto);
         assert_eq!(p.calls().len(), 2);
+    }
+
+    /// `build_player` with `mode=Off` MUST short-circuit to
+    /// [`NullPlayer`] without ever touching the audio device. This
+    /// is what lets us run the daemon in `Off` mode on a headless
+    /// container without `WARN`s.
+    #[test]
+    fn build_player_off_returns_null() {
+        let p = build_player(SoundMode::Off, "");
+        // Smoke: calling .play() should be a no-op and not panic.
+        p.play(SoundMode::Off, Trigger::Manual);
+        p.play(SoundMode::Both, Trigger::Manual);
+        // No public observability on NullPlayer — but if there's
+        // ever a regression that returns a real player, an audio
+        // device init attempt will be visible in tracing logs.
+    }
+
+    /// Sanity-check that the bundled click is a plausible WAV: it
+    /// starts with `RIFF` and contains the `WAVE` form id at offset
+    /// 8. If a future commit accidentally clobbers the asset with
+    /// an empty file or a different format this test catches it
+    /// before the daemon segfaults at runtime.
+    #[test]
+    fn builtin_click_is_a_wav_file() {
+        assert!(
+            BUILTIN_CLICK_WAV.len() > 100,
+            "click.wav looks suspiciously small: {} bytes",
+            BUILTIN_CLICK_WAV.len()
+        );
+        assert_eq!(&BUILTIN_CLICK_WAV[0..4], b"RIFF");
+        assert_eq!(&BUILTIN_CLICK_WAV[8..12], b"WAVE");
     }
 }

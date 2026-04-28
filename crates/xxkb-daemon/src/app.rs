@@ -22,7 +22,7 @@ use xxkb_core::{
 };
 use xxkb_dbus::{DaemonInterface, DbusError, Emitter, WireOutput, WireWindow};
 use xxkb_indicators::IconCache;
-use xxkb_sound::{MockPlayer, SoundPlayer, Trigger};
+use xxkb_sound::{SoundPlayer, Trigger};
 use xxkb_x11::{Backend, BackendEvent, IndicatorTarget, MouseButton, WindowGeom, X11Backend};
 
 /// Per-window geometry cache keyed by tracked client window.
@@ -65,7 +65,10 @@ pub async fn run() -> Result<()> {
         ml
     }));
     let rules = Arc::new(Mutex::new(build_rules(&cfg.lock())));
-    let player: Arc<dyn SoundPlayer> = Arc::new(MockPlayer::new()); // swapped out at runtime
+    let player: Arc<dyn SoundPlayer> = {
+        let snapshot = cfg.lock();
+        xxkb_sound::build_player(snapshot.sound.mode, &snapshot.sound.file)
+    };
     let icons = Arc::new(IconCache::new());
     let geom_cache: GeomCache = Arc::new(Mutex::new(HashMap::new()));
     let props_cache: PropsCache = Arc::new(Mutex::new(HashMap::new()));
@@ -136,8 +139,6 @@ pub async fn run() -> Result<()> {
         }
     });
 
-    let _player = player;
-
     event_loop(
         async_rx,
         &backend,
@@ -150,6 +151,7 @@ pub async fn run() -> Result<()> {
         &geom_cache,
         &props_cache,
         emitter.as_ref(),
+        player.as_ref(),
     )
     .await
 }
@@ -167,6 +169,7 @@ async fn event_loop(
     geom_cache: &GeomCache,
     props_cache: &PropsCache,
     emitter: Option<&Emitter>,
+    player: &dyn SoundPlayer,
 ) -> Result<()> {
     // Track the window id we last decorated so signal subscribers
     // can correlate `LayoutChanged` with a window. `0` means "no
@@ -179,11 +182,16 @@ async fn event_loop(
             BackendEvent::LayoutChanged { new_group, kind } => {
                 if let Ok(g) = Group::new(new_group, 4) {
                     layout.lock().observe(g);
+                    // Dispatch the audio cue *before* the repaint:
+                    // the visual update is at the X server's mercy
+                    // (next vblank-ish), and we want the click to
+                    // lead, not lag.
                     let trigger = match kind {
                         SwitchKind::Auto => Trigger::Auto,
                         _ => Trigger::Manual,
                     };
-                    let _ = trigger;
+                    let sound_mode = cfg.lock().sound.mode;
+                    player.play(sound_mode, trigger);
                     repaint_main_indicators(backend, monitor_layout, cfg, icons, g).await;
                     repaint_all_per_window_indicators(backend, registry, cfg, icons, g).await;
                     if let Some(em) = emitter {

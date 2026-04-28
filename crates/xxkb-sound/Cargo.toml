@@ -14,8 +14,14 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 
 [features]
-# rodio playback. Requires libasound2-dev on Linux.
-default = []
+# Real audio playback via rodio. Requires libasound2-dev at build
+# time and an ALSA device at runtime; on systems without one the
+# daemon detects the failure at `RodioPlayer::new` and falls back to
+# a no-op player. We keep this feature on by default so production
+# `cargo install` and `.deb` builds get sound; tests opt out via
+# `--no-default-features` when they want to exercise just the
+# policy logic without dragging in libasound.
+default = ["rodio-playback"]
 rodio-playback = ["dep:rodio"]
 
 [dependencies.rodio]

@@ -1,0 +1,31 @@
+[Unit]
+Description=xxkb keyboard layout indicator daemon
+Documentation=https://github.com/tcelovalnikov-gif/xxkb-rs
+# We need a graphical X session before xxkbd can usefully connect to
+# the X server. `graphical-session.target` is set up by the user
+# manager when the desktop session reaches "ready".
+After=graphical-session.target
+PartOf=graphical-session.target
+ConditionEnvironment=DISPLAY
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/xxkbd
+Restart=on-failure
+RestartSec=2s
+# Keep stdout/stderr in the journal for debugging via `journalctl --user -u xxkbd`.
+StandardOutput=journal
+StandardError=journal
+# Soft sandboxing — we still need access to the user's display socket
+# and ~/.config/xxkb/, so we can't lock things down too hard.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/xxkb
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=graphical-session.target

@@ -50,6 +50,7 @@ assets = [
     ["target/release/xxkbd", "usr/bin/", "755"],
     ["../../assets/desktop/xxkbd.desktop", "etc/xdg/autostart/", "644"],
     ["../../assets/icons/", "usr/share/xxkb/icons/", "644"],
-    ["../../assets/sounds/click.ogg", "usr/share/xxkb/sounds/", "644"],
+    ["../../assets/sounds/click.wav", "usr/share/xxkb/sounds/", "644"],
+    ["../../assets/sounds/LICENSE.md", "usr/share/xxkb/sounds/", "644"],
     ["../../packaging/systemd/xxkbd.service", "usr/lib/systemd/user/", "644"],
 ]

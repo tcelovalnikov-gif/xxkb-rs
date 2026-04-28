@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=xxkb Configurator
+Name[ru]=Настройки xxkb
+GenericName=Keyboard Layout Indicator Settings
+Comment=Configure the xxkbd keyboard layout indicator
+Comment[ru]=Настройка индикатора раскладки xxkbd
+Exec=xxkb-config
+Icon=preferences-desktop-keyboard
+Terminal=false
+Categories=Settings;DesktopSettings;HardwareSettings;Utility;GTK;
+Keywords=keyboard;layout;xkb;indicator;configurator;settings;
+StartupNotify=true

@@ -96,10 +96,9 @@ jobs:
   package-deb:
     name: Build .deb
     runs-on: ubuntu-24.04
-    # Packaging metadata still references assets we have not yet
-    # committed (desktop file, systemd unit, click.ogg). Run on demand
-    # only until those land — see issue tracker / TODO list.
-    if: github.event_name == 'workflow_dispatch'
+    # All assets referenced by `[package.metadata.deb]` are now in
+    # `assets/` and `packaging/`, so this job runs on every push and
+    # PR. The smoke-de matrix downstream still depends on it.
     needs: [lint, unit]
     steps:
       - uses: actions/checkout@v4

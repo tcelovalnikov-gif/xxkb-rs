@@ -139,10 +139,10 @@ pub fn build_player(cfg_mode: SoundMode, cfg_file: &str) -> Arc<dyn SoundPlayer>
             Some(std::path::Path::new(cfg_file))
         };
         match rodio_player::RodioPlayer::new(path) {
-            Ok(p) => return Arc::new(p),
+            Ok(p) => Arc::new(p),
             Err(e) => {
                 tracing::warn!(error = %e, "audio sink unavailable; falling back to silent player");
-                return Arc::new(NullPlayer);
+                Arc::new(NullPlayer)
             }
         }
     }

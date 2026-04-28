@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 
+use futures::StreamExt;
 use thiserror::Error;
 use xxkb_dbus::{DaemonProxy, WireOutput, WireWindow};
 
@@ -101,6 +102,53 @@ pub async fn daemon_version() -> Result<Option<String>, ClientError> {
     }
     let proxy = DaemonProxy::new(&conn).await?;
     Ok(Some(proxy.version().await?))
+}
+
+/// Spawn a background thread that listens for `PositionsSaved` on the session
+/// bus and invokes `on_saved(count)` for each signal.
+///
+/// Intended for the GTK configurator: wrap `on_saved` in
+/// `glib::MainContext::default().invoke` so toasts run on the UI thread.
+///
+/// If the session bus is unavailable or the stream ends, the thread exits
+/// quietly (errors are logged at `debug` / `warn`).
+pub fn spawn_positions_saved_listener<F>(on_saved: F)
+where
+    F: Fn(u32) + Send + 'static,
+{
+    let r = std::thread::Builder::new()
+        .name("xxkb-positions-saved".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!(error = %e, "tokio runtime for PositionsSaved listener");
+                    return;
+                }
+            };
+            if let Err(e) = rt.block_on(async {
+                let conn = zbus::Connection::session().await?;
+                let proxy = DaemonProxy::new(&conn).await?;
+                let mut stream = proxy.receive_positions_saved().await?;
+                while let Some(msg) = stream.next().await {
+                    match msg.args() {
+                        Ok(args) => on_saved(args.count),
+                        Err(err) => {
+                            tracing::warn!(error = %err, "positions_saved signal args");
+                        }
+                    }
+                }
+                Ok::<(), ClientError>(())
+            }) {
+                tracing::debug!(error = %e, "PositionsSaved listener stopped");
+            }
+        });
+    if let Err(e) = r {
+        tracing::warn!(error = %e, "could not spawn PositionsSaved listener thread");
+    }
 }
 
 /// Convenience wrappers that block the calling thread until the call

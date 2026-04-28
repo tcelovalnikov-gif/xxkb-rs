@@ -76,12 +76,14 @@ The "main" flag indicator that lives on each display.
 | `enable` | bool | `true` | Master switch. |
 | `mode` | enum | `"all_displays"` | `"primary_only"` shows only on the RandR primary; `"all_displays"` shows on every active output. |
 | `size_px` | int (>0) | `48` | Side length in pixels (square). |
+| `confirm_drag_save` | bool | `false` | If `true`, after Ctrl-drag the daemon asks with `zenity` or `kdialog` before writing the file; **No** snaps the indicator back. If neither tool works, the position is still saved (see logs). |
 
 ```toml
 [main_indicator]
 enable = true
 mode = "all_displays"
 size_px = 48
+confirm_drag_save = false
 ```
 
 ### `[main_indicator.border]`
@@ -103,8 +105,11 @@ width = 2
 
 ### `[main_indicator.positions]`
 
-Saved positions, keyed by RandR output name. The daemon writes to
-this section automatically when you Ctrl-drag the indicator.
+Saved positions, keyed by RandR output name (e.g. `eDP-1`, `HDMI-1`).
+The daemon writes here after Ctrl-drag (unless you cancel a confirmation
+dialog when `confirm_drag_save = true`). Keys for unplugged monitors may
+remain until you edit the file; they do not affect placement on other
+outputs.
 
 ```toml
 [main_indicator.positions]

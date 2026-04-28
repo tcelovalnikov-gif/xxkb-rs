@@ -134,7 +134,9 @@ Signals:
 * `LayoutChanged(group_one_based: u8, wid: u32)` — emitted from the
   daemon's `event_loop` whenever `LayoutState::observe` advances.
 * `Reloaded(ok: bool)` — emitted after `Reload`.
-* `PositionsSaved(count: u32)` — emitted after `SaveCurrentPositions`.
+* `PositionsSaved(count: u32)` — emitted after `SaveCurrentPositions` **and**
+  after each successful Ctrl-drag save of the main indicator (count `1`),
+  so the GTK configurator can toast without polling the file.
 
 The interface is generated **once** in `xxkb-dbus` via `#[zbus::proxy]`
 and used as the typed `DaemonProxy` from both `xxkbd` (for testing)

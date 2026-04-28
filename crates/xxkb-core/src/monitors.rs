@@ -427,4 +427,22 @@ mod tests {
         let plan_b = reconcile_main_indicators(&s(&["HDMI-1", "DP-1"]), &s(&["DP-1"]));
         assert_eq!(plan_a, plan_b);
     }
+
+    /// Orphan keys in `saved_positions` (e.g. an unplugged output) must not
+    /// affect placement on a *different* active output.
+    #[test]
+    fn orphan_saved_keys_do_not_affect_active_outputs() {
+        let mut saved = IndexMap::new();
+        saved.insert(OutputName::from("HDMI-1"), Point::new(999, 999));
+        let mut ml = MonitorLayout::new(saved);
+        ml.update_outputs(vec![out("DP-1", 0, 0, 1920, 1080, true)]);
+        let dp = ml.active().next().expect("DP-1 active");
+        let p = ml.position_for(dp, 48);
+        assert_ne!(p, Point::new(999, 999));
+        assert_eq!(
+            p,
+            MonitorLayout::default_position(dp, 48),
+            "DP-1 should get bottom-right default, not HDMI-1's stale coords"
+        );
+    }
 }

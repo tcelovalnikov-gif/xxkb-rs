@@ -3454,7 +3454,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xxkb-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs 5.0.1",
  "figment",
@@ -3472,8 +3472,9 @@ dependencies = [
 
 [[package]]
 name = "xxkb-config-state"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "futures",
  "globset",
  "indexmap",
  "pretty_assertions",
@@ -3489,7 +3490,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-configurator"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "glib",
@@ -3506,7 +3507,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "globset",
  "indexmap",
@@ -3519,7 +3520,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3544,7 +3545,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-dbus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3561,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-indicators"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "indexmap",
@@ -3580,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-migrate"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -3595,7 +3596,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-sound"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "parking_lot",
  "pretty_assertions",
@@ -3607,7 +3608,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-test-utils"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -3619,7 +3620,7 @@ dependencies = [
 
 [[package]]
 name = "xxkb-x11"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "indexmap",

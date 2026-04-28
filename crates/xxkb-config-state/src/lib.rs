@@ -10,7 +10,9 @@
 //! binds GTK widgets to its setters. On "Save" it calls
 //! [`ConfigEditor::save_to_default`] (which writes
 //! `~/.config/xxkb/config.toml` atomically) and optionally
-//! [`dbus_client::ping_reload`] to nudge the running daemon.
+//! [`dbus_client::ping_reload`] to nudge the running daemon, and
+//! [`dbus_client::spawn_positions_saved_listener`] for toasts when the
+//! daemon persists main-indicator positions.
 //!
 //! [`Config`]: xxkb_config::Config
 

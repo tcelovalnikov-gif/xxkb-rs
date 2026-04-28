@@ -1,0 +1,3 @@
+! Minimal legacy snippet — typical user who only set groups
+XXkb.group.base: 1
+XXkb.group.alt: 3

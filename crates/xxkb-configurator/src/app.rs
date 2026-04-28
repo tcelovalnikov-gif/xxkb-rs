@@ -148,6 +148,25 @@ fn build_window(app: &adw::Application, editor: SharedEditor) {
     }
     header.pack_end(&save_button);
 
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<u32>();
+        let toast_poll = toast_overlay.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+            for count in rx.try_iter() {
+                let msg = if count == 1 {
+                    "Daemon saved a main-indicator position (Ctrl+drag or D-Bus).".to_string()
+                } else {
+                    format!("Daemon saved {count} main-indicator positions.")
+                };
+                toast_poll.add_toast(adw::Toast::new(&msg));
+            }
+            glib::ControlFlow::Continue
+        });
+        xxkb_config_state::dbus_client::spawn_positions_saved_listener(move |count| {
+            let _ = tx.send(count);
+        });
+    }
+
     window.set_content(Some(&toolbar));
     window.present();
 }
@@ -283,6 +302,18 @@ fn main_indicator_page(editor: &SharedEditor, toast: &adw::ToastOverlay) -> adw:
         },
     ));
 
+    group.add(&switch_row(
+        "Confirm before saving drag",
+        Some(
+            "Opens a short dialog (zenity or kdialog) after Ctrl-drag; declining restores the previous position",
+        ),
+        cfg.main_indicator.confirm_drag_save,
+        {
+            let editor = editor.clone();
+            move |b| editor.borrow_mut().set_main_confirm_drag_save(b)
+        },
+    ));
+
     group.add(&spin_row_validated(
         "Size (px)",
         (8.0, 256.0, 1.0),
@@ -309,7 +340,9 @@ fn main_indicator_page(editor: &SharedEditor, toast: &adw::ToastOverlay) -> adw:
     let positions_group = adw::PreferencesGroup::new();
     positions_group.set_title("Saved positions");
     positions_group.set_description(Some(
-        "Drag the indicator with Ctrl-click to update; positions appear here.",
+        "Ctrl-drag updates the live indicator; the daemon writes ~/.config/xxkb/config.toml \
+         (optional confirmation dialog if enabled below). If xxkb-config is open, a toast fires \
+         when the daemon emits PositionsSaved.",
     ));
     if cfg.main_indicator.positions.is_empty() {
         let row = adw::ActionRow::new();

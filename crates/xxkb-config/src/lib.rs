@@ -156,6 +156,12 @@ pub struct MainIndicatorConfig {
     pub size_px: u32,
     /// Optional border.
     pub border: BorderConfig,
+    /// If true, after Ctrl-dragging the main indicator the daemon opens a
+    /// short confirmation dialog (`zenity` or `kdialog`) before writing
+    /// `config.toml`. If the user declines, the indicator snaps back to its
+    /// previous position.
+    #[serde(default)]
+    pub confirm_drag_save: bool,
     /// Saved positions, keyed by RandR output name.
     pub positions: IndexMap<OutputName, Point>,
 }
@@ -168,6 +174,7 @@ impl Default for MainIndicatorConfig {
             size_px: 48,
             border: BorderConfig::default(),
             positions: IndexMap::new(),
+            confirm_drag_save: false,
         }
     }
 }

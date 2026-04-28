@@ -16,6 +16,7 @@ indexmap = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]

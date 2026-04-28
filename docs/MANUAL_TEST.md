@@ -47,7 +47,15 @@ two-monitor desktop. Two layouts: `us,ru,grp:alt_shift_toggle`.
   - The indicator follows the pointer.
   - On release, `~/.config/xxkb/config.toml` gains
     `[main_indicator.positions]` with the new `(x, y)` keyed by
-    the output name.
+    the RandR output name (`eDP-1`, `HDMI-1`, …).
+  - With `main_indicator.confirm_drag_save = false` (default),
+    the write happens immediately and the daemon emits
+    `PositionsSaved(1)` on D-Bus.
+  - With `confirm_drag_save = true` and `zenity` or `kdialog`
+    installed, a Yes/No dialog appears; **No** moves the flag
+    back to the previous coordinates and does not write the file.
+- [ ] Open `xxkb-config`, leave it running, drag the main indicator
+  again. Within ~120 ms a toast should appear (“Daemon saved …”).
 - [ ] Restart `xxkbd`. The indicator reappears at the dragged
   position.
 - [ ] In `xxkb-config`, set `main_indicator.mode =
@@ -133,9 +141,11 @@ With `xxkbd` running:
     changed`.
   - A new main indicator appears on the second display (assuming
     `mode = all_displays`).
-- [ ] Disconnect it. Indicator on the now-disconnected output
-  vanishes (TODO: this currently leaks an indicator window;
-  document the bug).
+- [ ] Disconnect it. The indicator on the removed output should
+  disappear (RandR reconciliation tears down orphan windows).
+- [ ] Confirm `~/.config/xxkb/config.toml` may still list positions
+  for unplugged output names; that must not move the flag on a
+  *different* monitor (see unit test `orphan_saved_keys_do_not_affect_active_outputs`).
 
 ## 10. Crash and recovery
 
@@ -159,6 +169,17 @@ With `xxkbd` running:
   `Active: active (running)`.
 - [ ] Log out and log back in. Daemon starts via the autostart
   desktop file (or systemd user unit, depending on DE).
+
+## 12. Heavy DE smoke (optional, CI)
+
+The GitHub workflow **DE smoke** builds Docker images (Xfce / MATE /
+LXDE) and is **not** run on every push (too slow). To exercise it:
+
+- In the repo on GitHub: **Actions → CI → Run workflow** (workflow
+  dispatch), or wait for the scheduled run if enabled.
+- Locally: `docker build -f tests/docker/Dockerfile.xfce -t xxkb-smoke-xfce .`
+  then `docker run --rm -v "$PWD/dist:/dist" xxkb-smoke-xfce /smoke.sh`
+  (after producing `.deb` packages under `dist/`).
 
 ---
 

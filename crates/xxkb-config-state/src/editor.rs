@@ -168,6 +168,12 @@ impl ConfigEditor {
         Ok(())
     }
 
+    /// Ask for desktop confirmation (`zenity` / `kdialog`) before persisting a
+    /// Ctrl-dragged main-indicator position.
+    pub fn set_main_confirm_drag_save(&mut self, b: bool) {
+        self.current.main_indicator.confirm_drag_save = b;
+    }
+
     /// Insert (or replace) a saved position for `output`.
     pub fn set_main_position(&mut self, output: OutputName, point: Point) {
         self.current.main_indicator.positions.insert(output, point);

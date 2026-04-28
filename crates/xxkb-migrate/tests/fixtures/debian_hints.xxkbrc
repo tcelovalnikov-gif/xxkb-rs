@@ -1,0 +1,20 @@
+! Synthetic file inspired by Debian/Ubuntu xxkb package hints + user tweaks
+! (not a verbatim copy of any single system file)
+XXkb.group.base: 1
+XXkb.group.alt: 2
+XXkb.controls.two_state: yes
+XXkb.keymask.cycle: alt
+XXkb.ignore.reverse: yes
+
+XXkb.mainwindow.enable: yes
+XXkb.mainwindow.geometry: 32x32+12+8
+XXkb.mainwindow.border.color: DarkGrey
+XXkb.mainwindow.border.width: 1
+
+XXkb.button.enable: yes
+XXkb.button.geometry: 14x14-55-5
+
+XXkb.bell.enable: no
+
+XXkb.app_list.wm_class_class.ignore: *xclock* Fvwm*
+XXkb.app_list.wm_name.start_alt: licq

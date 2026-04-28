@@ -7,6 +7,8 @@
 //! * `xxkb-sound` — play click on switch
 //! * `xxkb-dbus` — expose `org.xxkb.Daemon1` for the configurator
 
+mod drag_confirm;
+
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
@@ -253,10 +255,51 @@ async fn event_loop(
             }
             BackendEvent::IndicatorDragged { target, new_origin } => {
                 if let IndicatorTarget::Main(output_name) = target {
-                    if let Err(e) =
-                        save_main_position(cfg, monitor_layout, &output_name, new_origin)
-                    {
-                        tracing::warn!(error = %e, "failed to persist dragged position");
+                    let (confirm, size_px, previous) = {
+                        let ml = monitor_layout.lock();
+                        let cfgg = cfg.lock();
+                        let confirm = cfgg.main_indicator.confirm_drag_save;
+                        let size = cfgg.main_indicator.size_px;
+                        let prev = ml
+                            .active()
+                            .find(|o| &*o.name == output_name.as_str())
+                            .map(|o| ml.position_for(o, size));
+                        (confirm, size, prev)
+                    };
+                    if confirm {
+                        let name = output_name.clone();
+                        let p = new_origin;
+                        let approved = tokio::task::spawn_blocking(move || {
+                            drag_confirm::confirm_save_dragged_position(&name, p.x, p.y)
+                        })
+                        .await
+                        .unwrap_or(false);
+                        if !approved {
+                            if let Some(prev) = previous {
+                                if let Err(e) = backend
+                                    .lock()
+                                    .await
+                                    .place_main_indicator(&output_name, prev, size_px)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "failed to revert main indicator after save declined"
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                    match save_main_position(cfg, monitor_layout, &output_name, new_origin) {
+                        Ok(()) => {
+                            if let Some(em) = emitter {
+                                if let Err(e) = em.positions_saved(1).await {
+                                    tracing::debug!(error = %e, "PositionsSaved emit failed");
+                                }
+                            }
+                        }
+                        Err(e) => tracing::warn!(error = %e, "failed to persist dragged position"),
                     }
                 }
                 // Per-window drag is intentionally a no-op: the offset is
@@ -657,6 +700,7 @@ mod tests {
             mode,
             size_px: 48,
             border: BorderConfig::default(),
+            confirm_drag_save: false,
             positions: Default::default(),
         }
     }

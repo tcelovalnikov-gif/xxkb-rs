@@ -3547,6 +3547,8 @@ name = "xxkb-dbus"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
+ "parking_lot",
  "pretty_assertions",
  "serde",
  "thiserror 1.0.69",

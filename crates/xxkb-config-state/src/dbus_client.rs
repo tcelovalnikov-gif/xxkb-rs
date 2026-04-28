@@ -9,20 +9,26 @@
 //! * fetch the live monitor list to render the position editor
 //!   ([`fetch_monitors`]);
 //! * fetch the active windows for the rules editor's "Capture" button
-//!   ([`fetch_active_windows`]).
+//!   ([`fetch_active_windows`]);
+//! * push dragged-then-confirmed positions back onto the daemon
+//!   ([`save_positions`]).
 //!
-//! All helpers return `Result<_, ClientError>` instead of bubbling
-//! `zbus::Error` directly so callers can render a single tidy error
-//! string in the GUI.
+//! Internally we now use the typed [`xxkb_dbus::DaemonProxy`]
+//! generated from `#[zbus::proxy]`, instead of stringly-typed
+//! `Proxy::call_method("Foo", &(...))` calls. That gives us:
+//!
+//! * a single source of truth for method names + signatures (the
+//!   `pub trait Daemon` in `xxkb-dbus`),
+//! * compile-time verification that the GUI and daemon agree on the
+//!   wire types (changes to `WireOutput`/`WireWindow` propagate
+//!   automatically),
+//! * easy access to signal streams for future
+//!   "auto-refresh on `LayoutChanged`" UI work.
 
 use std::collections::HashMap;
 
 use thiserror::Error;
-use xxkb_dbus::{WireOutput, WireWindow};
-
-const DAEMON_BUS: &str = "org.xxkb.Daemon1";
-const DAEMON_PATH: &str = "/org/xxkb/Daemon1";
-const DAEMON_IFACE: &str = "org.xxkb.Daemon1";
+use xxkb_dbus::{DaemonProxy, WireOutput, WireWindow};
 
 /// Errors from the D-Bus client.
 #[derive(Debug, Error)]
@@ -49,32 +55,28 @@ impl From<zbus::fdo::Error> for ClientError {
 /// an error from the user's perspective.
 pub async fn ping_reload() -> Result<(), ClientError> {
     let conn = zbus::Connection::session().await?;
-    if !daemon_present(&conn).await? {
+    if !xxkb_dbus::is_daemon_present(&conn).await? {
         tracing::debug!("daemon not on bus; skipping reload ping");
         return Ok(());
     }
-    let proxy = make_proxy(&conn).await?;
-    proxy.call_method("Reload", &()).await?;
+    let proxy = DaemonProxy::new(&conn).await?;
+    proxy.reload().await?;
     Ok(())
 }
 
 /// Fetch a snapshot of currently-known RandR outputs.
 pub async fn fetch_monitors() -> Result<Vec<WireOutput>, ClientError> {
     let conn = zbus::Connection::session().await?;
-    let proxy = make_proxy(&conn).await?;
-    let reply = proxy.call_method("GetMonitors", &()).await?;
-    let outputs: Vec<WireOutput> = reply.body().deserialize()?;
-    Ok(outputs)
+    let proxy = DaemonProxy::new(&conn).await?;
+    Ok(proxy.get_monitors().await?)
 }
 
 /// Fetch a snapshot of the active windows the daemon is currently
 /// tracking.
 pub async fn fetch_active_windows() -> Result<Vec<WireWindow>, ClientError> {
     let conn = zbus::Connection::session().await?;
-    let proxy = make_proxy(&conn).await?;
-    let reply = proxy.call_method("GetActiveWindows", &()).await?;
-    let windows: Vec<WireWindow> = reply.body().deserialize()?;
-    Ok(windows)
+    let proxy = DaemonProxy::new(&conn).await?;
+    Ok(proxy.get_active_windows().await?)
 }
 
 /// Save a `(output_name -> (x, y))` map of positions, replacing any
@@ -82,21 +84,23 @@ pub async fn fetch_active_windows() -> Result<Vec<WireWindow>, ClientError> {
 /// the GUI doesn't need to follow up with [`ping_reload`].
 pub async fn save_positions(positions: HashMap<String, (i32, i32)>) -> Result<(), ClientError> {
     let conn = zbus::Connection::session().await?;
-    let proxy = make_proxy(&conn).await?;
-    proxy
-        .call_method("SaveCurrentPositions", &(positions,))
-        .await?;
+    let proxy = DaemonProxy::new(&conn).await?;
+    proxy.save_current_positions(positions).await?;
     Ok(())
 }
 
-async fn daemon_present(conn: &zbus::Connection) -> Result<bool, ClientError> {
-    let proxy = zbus::fdo::DBusProxy::new(conn).await?;
-    let owners = proxy.list_names().await?;
-    Ok(owners.iter().any(|n| n.as_str() == DAEMON_BUS))
-}
-
-async fn make_proxy(conn: &zbus::Connection) -> Result<zbus::Proxy<'_>, ClientError> {
-    Ok(zbus::Proxy::new(conn, DAEMON_BUS, DAEMON_PATH, DAEMON_IFACE).await?)
+/// Liveness probe — returns the daemon's `Version()` reply when the
+/// service answers, `Ok(None)` when the well-known name is not on
+/// the bus. Exposed so the configurator can render a
+/// "daemon: 0.1.0 / not running" badge without surfacing
+/// `ServiceUnknown` errors.
+pub async fn daemon_version() -> Result<Option<String>, ClientError> {
+    let conn = zbus::Connection::session().await?;
+    if !xxkb_dbus::is_daemon_present(&conn).await? {
+        return Ok(None);
+    }
+    let proxy = DaemonProxy::new(&conn).await?;
+    Ok(Some(proxy.version().await?))
 }
 
 /// Convenience wrappers that block the calling thread until the call
@@ -129,6 +133,11 @@ pub mod blocking {
         with_runtime(super::save_positions(positions))
     }
 
+    /// Blocking version of [`super::daemon_version`].
+    pub fn daemon_version() -> Result<Option<String>, ClientError> {
+        with_runtime(super::daemon_version())
+    }
+
     fn with_runtime<F: std::future::Future>(f: F) -> F::Output {
         // Build a small dedicated runtime per call. The configurator
         // does at most one D-Bus call per user click, so the cost is
@@ -153,19 +162,26 @@ mod tests {
     use super::*;
 
     /// We cannot actually exercise the bus in unit tests (CI rarely has
-    /// a session bus), but we can still smoke-check the constants and
-    /// the error conversions.
-    #[test]
-    fn constants_are_canonical() {
-        assert_eq!(DAEMON_BUS, "org.xxkb.Daemon1");
-        assert_eq!(DAEMON_PATH, "/org/xxkb/Daemon1");
-        assert_eq!(DAEMON_IFACE, "org.xxkb.Daemon1");
-    }
-
+    /// a session bus, and we don't want to spawn `dbus-launch`), but
+    /// we can still smoke-check the error conversion path that the
+    /// GUI relies on.
     #[test]
     fn fdo_errors_become_daemon_errors() {
         let fdo: zbus::fdo::Error = zbus::fdo::Error::Failed("boom".into());
         let client: ClientError = fdo.into();
-        assert!(matches!(client, ClientError::Daemon(_)));
+        match client {
+            ClientError::Daemon(msg) => assert!(msg.contains("boom")),
+            _ => panic!("expected ClientError::Daemon"),
+        }
+    }
+
+    /// Compile-time check that the typed proxy from xxkb-dbus is
+    /// actually re-importable here. If a future refactor of
+    /// `xxkb-dbus` accidentally drops the public `DaemonProxy`
+    /// re-export, this test will fail to compile, which is exactly
+    /// the early signal we want.
+    #[allow(dead_code)]
+    fn _proxy_is_in_scope() {
+        fn _accepts_proxy<'a>(_: DaemonProxy<'a>) {}
     }
 }

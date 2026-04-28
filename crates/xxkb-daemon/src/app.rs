@@ -20,7 +20,7 @@ use xxkb_core::{
     rules::{AppRules, Verdict},
     IndicatorPlacement,
 };
-use xxkb_dbus::{DaemonInterface, DbusError, WireOutput, WireWindow};
+use xxkb_dbus::{DaemonInterface, DbusError, Emitter, WireOutput, WireWindow};
 use xxkb_indicators::IconCache;
 use xxkb_sound::{MockPlayer, SoundPlayer, Trigger};
 use xxkb_x11::{Backend, BackendEvent, IndicatorTarget, MouseButton, WindowGeom, X11Backend};
@@ -87,16 +87,22 @@ pub async fn run() -> Result<()> {
 
     let dbus_iface = Arc::new(DaemonHandle {
         cfg: cfg.clone(),
+        backend: backend.clone(),
         layout: layout.clone(),
         monitor_layout: monitor_layout.clone(),
+        rules: rules.clone(),
+        icons: icons.clone(),
         registry: registry.clone(),
         props_cache: props_cache.clone(),
     });
-    let _dbus_conn = match xxkb_dbus::serve(dbus_iface).await {
-        Ok(c) => Some(c),
+    // `_dbus_conn` is held to keep the bus connection alive for the
+    // duration of `event_loop` — dropping it would unregister the
+    // interface and revoke the well-known name.
+    let (_dbus_conn, emitter) = match xxkb_dbus::serve(dbus_iface).await {
+        Ok((c, em)) => (Some(c), Some(em)),
         Err(DbusError::NameTaken(e)) => {
             tracing::warn!(error = %e, "another xxkbd is already running on D-Bus; continuing without bus");
-            None
+            (None, None)
         }
         Err(e) => return Err(anyhow::anyhow!("d-bus: {e}")),
     };
@@ -143,6 +149,7 @@ pub async fn run() -> Result<()> {
         &icons,
         &geom_cache,
         &props_cache,
+        emitter.as_ref(),
     )
     .await
 }
@@ -159,7 +166,14 @@ async fn event_loop(
     icons: &Arc<IconCache>,
     geom_cache: &GeomCache,
     props_cache: &PropsCache,
+    emitter: Option<&Emitter>,
 ) -> Result<()> {
+    // Track the window id we last decorated so signal subscribers
+    // can correlate `LayoutChanged` with a window. `0` means "no
+    // active window known yet"; this is what the original xxkb
+    // daemon also does on the wire.
+    let mut last_active_wid: u32 = 0;
+
     while let Some(event) = rx.recv().await {
         match event {
             BackendEvent::LayoutChanged { new_group, kind } => {
@@ -172,9 +186,17 @@ async fn event_loop(
                     let _ = trigger;
                     repaint_main_indicators(backend, monitor_layout, cfg, icons, g).await;
                     repaint_all_per_window_indicators(backend, registry, cfg, icons, g).await;
+                    if let Some(em) = emitter {
+                        if let Err(e) = em.layout_changed(g.as_one_based(), last_active_wid).await {
+                            tracing::debug!(error = %e, "LayoutChanged signal emit failed");
+                        }
+                    }
                 }
             }
             BackendEvent::ActiveWindowChanged { wid, props, geom } => {
+                if let Some(w) = wid {
+                    last_active_wid = w.0;
+                }
                 if let (Some(wid), Some(props)) = (wid, props) {
                     let verdict = rules.lock().verdict(&props);
                     if matches!(verdict, Verdict::Ignore) {
@@ -458,24 +480,40 @@ fn build_rules(cfg: &Config) -> AppRules {
     })
 }
 
+/// Live state shared between the X event loop, the inotify watcher,
+/// and the D-Bus interface. Holding `Arc<Mutex<...>>` of all the
+/// subsystems lets the bus's `Reload` method execute the *same* full
+/// reload path as the file watcher — i.e. it rebuilds rules, clears
+/// the icon cache, repaints indicators, and so on, instead of just
+/// swapping `cfg` in memory.
 struct DaemonHandle {
     cfg: Arc<Mutex<Config>>,
+    backend: Arc<tokio::sync::Mutex<X11Backend>>,
     layout: Arc<Mutex<LayoutState>>,
-    monitor_layout: Arc<Mutex<MonitorLayout>>,
     /// Held to keep the registry alive for parity with other state and
     /// to allow future D-Bus methods (e.g. `RememberLayout`) to mutate
     /// it without further plumbing.
     #[allow(dead_code)]
     registry: Arc<Mutex<WindowRegistry>>,
+    monitor_layout: Arc<Mutex<MonitorLayout>>,
+    rules: Arc<Mutex<AppRules>>,
+    icons: Arc<IconCache>,
     props_cache: PropsCache,
 }
 
 #[async_trait]
 impl DaemonInterface for DaemonHandle {
     async fn reload(&self) -> Result<(), String> {
-        let new_cfg = Config::load_default().map_err(|e| e.to_string())?;
-        *self.cfg.lock() = new_cfg;
-        Ok(())
+        reload(
+            &self.cfg,
+            &self.backend,
+            &self.layout,
+            &self.monitor_layout,
+            &self.rules,
+            &self.icons,
+        )
+        .await
+        .map_err(|e| e.to_string())
     }
 
     async fn outputs(&self) -> Result<Vec<WireOutput>, String> {
@@ -511,14 +549,18 @@ impl DaemonInterface for DaemonHandle {
     async fn save_positions(&self, positions: HashMap<String, (i32, i32)>) -> Result<(), String> {
         let mut cfg = self.cfg.lock();
         for (k, (x, y)) in positions {
+            // Persist into the live monitor_layout too so the next
+            // `place_main_indicator` consults up-to-date overrides
+            // without waiting for a Reload roundtrip.
+            self.monitor_layout
+                .lock()
+                .save_position(OutputName::from(k.clone()), Point::new(x, y));
             cfg.main_indicator
                 .positions
                 .insert(OutputName::from(k), Point::new(x, y));
         }
         let path = xxkb_config::config_path().map_err(|e| e.to_string())?;
         cfg.save_to(&path).map_err(|e| e.to_string())?;
-        // Touch layout so it isn't dropped as unused.
-        let _ = self.layout.lock().current();
         Ok(())
     }
 }

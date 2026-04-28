@@ -19,3 +19,6 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+futures = { workspace = true }

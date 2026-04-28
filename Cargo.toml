@@ -79,7 +79,11 @@ librsvg = "2.57"
 rodio = { version = "0.17", default-features = false, features = ["symphonia-vorbis", "symphonia-mp3", "symphonia-wav"] }
 
 # D-Bus
-zbus = { version = "4.1", default-features = false, features = ["tokio"] }
+# `p2p` is opt-in upstream and only used for in-process integration tests
+# (xxkb-dbus/tests/roundtrip.rs); production daemon code uses the session
+# bus. Including it in the default feature set keeps the dependency tree
+# uniform across crates and avoids feature-flag plumbing in tests.
+zbus = { version = "4.1", default-features = false, features = ["tokio", "p2p"] }
 
 # GTK4 (used in xxkb-configurator and for the "save?" dialog the daemon spawns)
 gtk4 = { version = "0.8", features = ["v4_10"] }

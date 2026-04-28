@@ -185,6 +185,72 @@ impl MonitorLayout {
     }
 }
 
+/// What [`reconcile_main_indicators`] tells the daemon to do with the
+/// X server in response to a config change or RandR notification.
+///
+/// Intentionally a plain struct of `Vec<String>`s so we can unit-test
+/// the planner independently of the (async, mutex-heavy) driver code
+/// in the daemon. The driver simply walks `to_remove` then `to_place`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MainIndicatorPlan {
+    /// Output names whose existing main indicator must be destroyed.
+    /// Includes:
+    ///
+    /// * outputs that disappeared from RandR (hot-unplug);
+    /// * outputs that no longer match the configured `mode` (flip
+    ///   `all_displays` → `primary_only`, primary changed, master
+    ///   toggle disabled);
+    /// * outputs we still know about but the user just unticked
+    ///   `main_indicator.enable`.
+    pub to_remove: Vec<String>,
+    /// Output names that should host a main indicator and currently
+    /// don't. The driver creates them with `place_main_indicator`.
+    /// Already-existing indicators are *not* listed here — repaint
+    /// of those is handled by the regular `LayoutChanged` path, so
+    /// reconciliation is flicker-free in the steady state.
+    pub to_place: Vec<String>,
+}
+
+/// Pure reconciliation step. Given:
+///
+/// * `existing`: output names that currently have a main indicator
+///   window mapped on the X server (queried via the backend's
+///   `main_indicator_outputs`),
+/// * `want`: output names that *should* host one given the latest
+///   config + RandR snapshot.
+///
+/// returns the diff. Order is deterministic: removals follow the
+/// `existing` order; placements follow the `want` order — which
+/// matches how we sort outputs in [`MonitorLayout`] (insertion
+/// order from RandR, primary first by convention).
+///
+/// This is the load-bearing piece of multi-monitor hot-plug
+/// behaviour: the daemon calls it on every `MonitorsChanged` and
+/// every config reload, and it is what makes a primary-flip /
+/// hot-unplug not leave zombie indicator windows on disconnected
+/// outputs.
+#[must_use]
+pub fn reconcile_main_indicators(existing: &[String], want: &[String]) -> MainIndicatorPlan {
+    let want_set: std::collections::HashSet<&str> = want.iter().map(String::as_str).collect();
+    let existing_set: std::collections::HashSet<&str> =
+        existing.iter().map(String::as_str).collect();
+
+    let to_remove: Vec<String> = existing
+        .iter()
+        .filter(|n| !want_set.contains(n.as_str()))
+        .cloned()
+        .collect();
+    let to_place: Vec<String> = want
+        .iter()
+        .filter(|n| !existing_set.contains(n.as_str()))
+        .cloned()
+        .collect();
+    MainIndicatorPlan {
+        to_remove,
+        to_place,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -241,5 +307,124 @@ mod tests {
         assert_eq!(l.output_at(Point::new(100, 100)).unwrap().name.0, "DP-1");
         assert_eq!(l.output_at(Point::new(2000, 50)).unwrap().name.0, "HDMI-1");
         assert!(l.output_at(Point::new(5000, 5000)).is_none());
+    }
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Initial daemon start: nothing on the server yet, RandR
+    /// reports two outputs, mode = all_displays — both should be
+    /// placed, none removed.
+    #[test]
+    fn reconcile_initial_placement_creates_all_targets() {
+        let plan = reconcile_main_indicators(&[], &s(&["DP-1", "HDMI-1"]));
+        assert_eq!(
+            plan,
+            MainIndicatorPlan {
+                to_remove: vec![],
+                to_place: s(&["DP-1", "HDMI-1"]),
+            }
+        );
+    }
+
+    /// Hot-unplug: HDMI-1 disappears from RandR. Its existing
+    /// indicator must be torn down; DP-1 stays untouched and is
+    /// *not* re-placed (no flicker).
+    #[test]
+    fn reconcile_hot_unplug_removes_disappeared_output_only() {
+        let existing = s(&["DP-1", "HDMI-1"]);
+        let want = s(&["DP-1"]);
+        let plan = reconcile_main_indicators(&existing, &want);
+        assert_eq!(
+            plan,
+            MainIndicatorPlan {
+                to_remove: s(&["HDMI-1"]),
+                to_place: vec![],
+            }
+        );
+    }
+
+    /// Hot-plug: a new monitor appears. Existing indicators are
+    /// preserved; the new output gets a fresh indicator.
+    #[test]
+    fn reconcile_hot_plug_places_new_output_only() {
+        let existing = s(&["DP-1"]);
+        let want = s(&["DP-1", "HDMI-1"]);
+        let plan = reconcile_main_indicators(&existing, &want);
+        assert_eq!(
+            plan,
+            MainIndicatorPlan {
+                to_remove: vec![],
+                to_place: s(&["HDMI-1"]),
+            }
+        );
+    }
+
+    /// User flips `mode = all_displays` -> `primary_only`. The
+    /// non-primary indicator(s) get destroyed; the primary stays.
+    #[test]
+    fn reconcile_mode_flip_to_primary_only_destroys_secondaries() {
+        let existing = s(&["DP-1", "HDMI-1"]);
+        let want = s(&["DP-1"]);
+        let plan = reconcile_main_indicators(&existing, &want);
+        assert_eq!(plan.to_remove, s(&["HDMI-1"]));
+        assert!(plan.to_place.is_empty());
+    }
+
+    /// Mirror of the above: the user flips back to `all_displays`.
+    /// Existing primary indicator stays; the secondary is created.
+    #[test]
+    fn reconcile_mode_flip_to_all_displays_creates_secondaries() {
+        let existing = s(&["DP-1"]);
+        let want = s(&["DP-1", "HDMI-1"]);
+        let plan = reconcile_main_indicators(&existing, &want);
+        assert!(plan.to_remove.is_empty());
+        assert_eq!(plan.to_place, s(&["HDMI-1"]));
+    }
+
+    /// User changes which output is primary while in `primary_only`
+    /// mode: old primary's indicator must be destroyed, new
+    /// primary's indicator created. Both happen in one tick.
+    #[test]
+    fn reconcile_primary_changed_in_primary_only_mode() {
+        let existing = s(&["DP-1"]);
+        let want = s(&["HDMI-1"]);
+        let plan = reconcile_main_indicators(&existing, &want);
+        assert_eq!(plan.to_remove, s(&["DP-1"]));
+        assert_eq!(plan.to_place, s(&["HDMI-1"]));
+    }
+
+    /// User unticks `main_indicator.enable`. `target_main_outputs`
+    /// returns []; reconciler must tear down everything we have on
+    /// the wire.
+    #[test]
+    fn reconcile_master_disable_destroys_all_existing() {
+        let existing = s(&["DP-1", "HDMI-1", "VGA-1"]);
+        let plan = reconcile_main_indicators(&existing, &[]);
+        assert_eq!(plan.to_remove, s(&["DP-1", "HDMI-1", "VGA-1"]));
+        assert!(plan.to_place.is_empty());
+    }
+
+    /// Steady state: nothing changed, reconciler must be a complete
+    /// no-op. This is what we hit on every spurious RandR notify
+    /// (and there are many — KWin flips primary on each animation
+    /// tick on some setups).
+    #[test]
+    fn reconcile_steady_state_is_a_noop() {
+        let existing = s(&["DP-1", "HDMI-1"]);
+        let want = s(&["DP-1", "HDMI-1"]);
+        let plan = reconcile_main_indicators(&existing, &want);
+        assert_eq!(plan, MainIndicatorPlan::default());
+    }
+
+    /// Order of `existing` must not affect the diff. RandR's
+    /// `GetScreenResources` order is implementation-defined and
+    /// can flip across reboots / hot-plugs.
+    #[test]
+    fn reconcile_is_set_based_not_order_based() {
+        let plan_a = reconcile_main_indicators(&s(&["DP-1", "HDMI-1"]), &s(&["DP-1"]));
+        let plan_b = reconcile_main_indicators(&s(&["HDMI-1", "DP-1"]), &s(&["DP-1"]));
+        assert_eq!(plan_a, plan_b);
     }
 }

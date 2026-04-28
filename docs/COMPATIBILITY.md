@@ -53,7 +53,7 @@ issue if you do.
 | Single monitor | ✅ Tested | The default case. |
 | Two monitors (extended) | ✅ Tested | Indicators are placed per-output via `MonitorLayout`; positions are saved keyed by output name. |
 | HiDPI (200%) | 🟡 Limited | Indicator size is configured in pixels; GTK auto-scaling is not yet applied. Workaround: bump `main_indicator.size_px` to e.g. `96`. |
-| Output hot-plug | 🟡 Partial | RandR `ScreenChangeNotify` triggers a layout refresh, but indicators on the disconnected output are not currently destroyed. Will be fixed under TODO `#04`. |
+| Output hot-plug | ✅ Tested | RandR `ScreenChangeNotify` triggers `MonitorLayout::update_outputs` followed by `reconcile_main_indicators` (in `xxkb-core::monitors`). The pure planner returns `(to_remove, to_place)` and the daemon walks both: indicators on disconnected outputs are torn down, indicators on freshly attached outputs are created with persisted positions where available. Hot-plug, hot-unplug, primary flip and `mode = primary_only` flips are all covered by 9 unit tests in `xxkb-core`. |
 
 ## Audio
 

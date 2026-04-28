@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use xxkb_config::{Config, MainIndicatorMode};
 use xxkb_core::{
     layout::{Group, LayoutState, SwitchKind, TwoStateConfig},
-    monitors::{MonitorLayout, OutputName, Point},
+    monitors::{reconcile_main_indicators, MonitorLayout, OutputName, Point},
     registry::{WindowId, WindowRegistry},
     rules::{AppRules, Verdict},
     IndicatorPlacement,
@@ -368,9 +368,7 @@ fn target_main_outputs(
                 active.iter().take(1).map(|o| o.name.0.clone()).collect()
             }
         }
-        MainIndicatorMode::AllDisplays => {
-            active.iter().map(|o| o.name.0.clone()).collect()
-        }
+        MainIndicatorMode::AllDisplays => active.iter().map(|o| o.name.0.clone()).collect(),
     }
 }
 
@@ -384,36 +382,32 @@ async fn place_initial_main_indicators(
     let main = cfg.lock().main_indicator.clone();
     let outs: Vec<_> = monitor_layout.lock().active().cloned().collect();
     let primary_name = monitor_layout.lock().primary().map(|p| p.name.0.clone());
-    let want: std::collections::HashSet<String> = target_main_outputs(
-        &main,
-        &outs,
-        primary_name.as_deref(),
-    )
-    .into_iter()
-    .collect();
+    let want = target_main_outputs(&main, &outs, primary_name.as_deref());
 
-    // 1. Reconcile: destroy any indicator that should no longer exist
-    //    (mode flipped to primary_only, output unplugged, master
-    //    disable toggled).
+    // Pure planner: figure out which indicators to destroy / create.
+    // Already-correct indicators are left alone; their repaint is
+    // driven by `LayoutChanged` / config-reload paths. This is what
+    // makes hot-unplug + mode-flip both work without flicker.
     let existing = backend
         .lock()
         .await
         .main_indicator_outputs()
         .await
         .unwrap_or_default();
-    for name in existing {
-        if !want.contains(&name) {
-            if let Err(e) = backend.lock().await.remove_main_indicator(&name).await {
-                tracing::warn!(output = %name, error = %e, "failed to destroy stale main indicator");
-            }
+    let plan = reconcile_main_indicators(&existing, &want);
+
+    // 1. Destroy indicators that should no longer exist.
+    for name in &plan.to_remove {
+        if let Err(e) = backend.lock().await.remove_main_indicator(name).await {
+            tracing::warn!(output = %name, error = %e, "failed to destroy stale main indicator");
         }
     }
 
-    if !main.enable || want.is_empty() {
+    if !main.enable || plan.to_place.is_empty() {
         return Ok(());
     }
 
-    // 2. Place / repaint indicators for the desired set.
+    // 2. Place + paint indicators that are newly required.
     let group = layout.lock().current();
     let buf = match flag::render_main(icons, &cfg.lock(), group) {
         Ok(b) => Some(b),
@@ -422,11 +416,15 @@ async fn place_initial_main_indicators(
             None
         }
     };
-    for o in outs {
-        if !want.contains(&o.name.0) {
+    let by_name: std::collections::HashMap<&str, &xxkb_core::monitors::Output> =
+        outs.iter().map(|o| (o.name.0.as_str(), o)).collect();
+    for name in &plan.to_place {
+        // `want` is computed from `outs`, so a missing entry is only
+        // possible if RandR raced with us; safest to skip.
+        let Some(&o) = by_name.get(name.as_str()) else {
             continue;
-        }
-        let p = monitor_layout.lock().position_for(&o, main.size_px);
+        };
+        let p = monitor_layout.lock().position_for(o, main.size_px);
         let _ = backend
             .lock()
             .await

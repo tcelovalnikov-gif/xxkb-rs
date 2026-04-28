@@ -307,9 +307,7 @@ mod inner {
         }
 
         pub fn remove_main_indicator(&self, output_name: &str) -> Result<(), X11Error> {
-            self.windows
-                .lock()
-                .remove_main(&*self.conn, output_name)
+            self.windows.lock().remove_main(&*self.conn, output_name)
         }
 
         pub fn main_indicator_outputs(&self) -> Vec<String> {

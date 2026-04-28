@@ -1,0 +1,34 @@
+# MATE-flavoured smoke-test image for xxkb-rs.
+#
+# As with the Xfce image, this is a *dependency-surface* check rather
+# than a real DE session: we install MATE's runtime libraries so that
+# our .deb is exercised against a typical MATE stack (Caja file
+# manager, mate-panel, marco WM), then run xxkbd against Xvfb.
+#
+# See `tests/docker/smoke.sh` for the runtime script.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    XXKB_DE=mate
+
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        xvfb \
+        xkb-data \
+        x11-xkb-utils \
+        x11-utils \
+        xdotool \
+        dbus-x11 \
+        # MATE runtime surface.
+        marco \
+        mate-panel \
+        mate-desktop \
+        libmate-desktop-2-17 \
+        caja \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY tests/docker/smoke.sh /smoke.sh
+RUN chmod +x /smoke.sh
+
+CMD ["/smoke.sh"]

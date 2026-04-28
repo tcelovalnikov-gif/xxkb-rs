@@ -1,0 +1,32 @@
+# LXDE-flavoured smoke-test image for xxkb-rs.
+#
+# Same shape as the Xfce / MATE images: install the LXDE runtime
+# stack so that our .deb is validated against the typical Openbox +
+# LXPanel + PCManFM dependency graph, then exercise xxkbd under Xvfb.
+#
+# See `tests/docker/smoke.sh` for the runtime script.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    XXKB_DE=lxde
+
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        xvfb \
+        xkb-data \
+        x11-xkb-utils \
+        x11-utils \
+        xdotool \
+        dbus-x11 \
+        # LXDE runtime surface.
+        lxde-core \
+        openbox \
+        lxpanel \
+        pcmanfm \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY tests/docker/smoke.sh /smoke.sh
+RUN chmod +x /smoke.sh
+
+CMD ["/smoke.sh"]

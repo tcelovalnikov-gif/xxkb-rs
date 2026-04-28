@@ -1,0 +1,45 @@
+# Xfce-flavoured smoke-test image for xxkb-rs.
+#
+# The image only pulls *Xfce libraries* into apt's view, not a running
+# Xfce session — running a real DE inside a Docker container is brittle
+# and out of scope. The point of this layer is to validate that the
+# xxkb-daemon .deb installs cleanly when Xfce's typical runtime stack
+# (xfwm4, gtk3, gvfs, etc.) is already present, and that xxkbd boots
+# under Xvfb on top of that environment.
+#
+# CI: see `tests/docker/smoke.sh` for the runtime contract and
+# `.github/workflows/ci.yml::smoke-de` for invocation.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    XXKB_DE=xfce
+
+# A two-stage install:
+#   1. core test harness (Xvfb / xkb / xdotool / dbus / xwininfo);
+#   2. Xfce stack — `xfce4` would pull a full session including
+#      lightdm/greeters which we don't need; we install only the WM
+#      and core panel/desktop libs to populate the apt graph and
+#      catch dependency conflicts with our .deb.
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        xvfb \
+        xkb-data \
+        x11-xkb-utils \
+        x11-utils \
+        xdotool \
+        dbus-x11 \
+        # Xfce runtime surface — libs only, no session manager.
+        xfwm4 \
+        xfce4-session \
+        xfce4-panel \
+        xfce4-settings \
+        libxfce4ui-2-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY tests/docker/smoke.sh /smoke.sh
+RUN chmod +x /smoke.sh
+
+# Smoke runs under root inside the throwaway container — no entrypoint
+# magic needed. CI invokes `/smoke.sh` explicitly.
+CMD ["/smoke.sh"]

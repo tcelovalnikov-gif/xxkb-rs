@@ -317,7 +317,23 @@ impl Config {
         } else {
             trace!(?path, "config file does not exist, using defaults");
         }
-        figment = figment.merge(Env::prefixed("XXKB_").split("__"));
+        // Only accept env-var overrides that are *clearly* meant as
+        // structured config (`XXKB_<SECTION>__<FIELD>=...`). The
+        // `__` is our nesting marker; anything without it is treated
+        // as application data we don't own — e.g. `XXKB_TEST_XVFB=1`
+        // used by integration tests, or random `XXKB_DEBUG=1` flags
+        // a user might already export. Without this filter, figment
+        // (combined with `deny_unknown_fields`) would error out and
+        // the daemon would refuse to start.
+        // NOTE: filter MUST run before split — `Env::split` is
+        // implemented as a key-rewriting map that replaces `__` with
+        // `.`, so by the time the filter would see the key, the `__`
+        // marker would already be gone.
+        figment = figment.merge(
+            Env::prefixed("XXKB_")
+                .filter(|k| k.as_str().contains("__"))
+                .split("__"),
+        );
         let cfg: Self = figment
             .extract()
             .map_err(|e| ConfigError::Load(Box::new(e)))?;
@@ -464,5 +480,50 @@ size_px = 32
         std::fs::write(&path, "[general]\ntwo_state = true\nbogus = 42\n").unwrap();
         let err = Config::load_from(&path).err().unwrap();
         assert!(matches!(err, ConfigError::Load(_)));
+    }
+
+    /// Stray `XXKB_*` env vars without the structured `__` separator
+    /// (e.g. `XXKB_TEST_XVFB=1` set by the integration-test runner,
+    /// or `XXKB_DEBUG=1` exported by a user) must NOT prevent the
+    /// daemon from starting. Regression test for the CI Xvfb job.
+    #[test]
+    #[allow(unsafe_code)] // env::set_var is unsafe on edition 2024 rustc
+    fn stray_env_var_without_double_underscore_is_ignored() {
+        // SAFETY: we only mutate one well-known variable and unset it
+        // before the test returns. Tests in the same crate run in the
+        // same process; nothing else here reads `XXKB_TEST_XVFB`.
+        unsafe {
+            std::env::set_var("XXKB_TEST_XVFB", "1");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let result = Config::load_from(&path);
+        unsafe {
+            std::env::remove_var("XXKB_TEST_XVFB");
+        }
+        assert!(
+            result.is_ok(),
+            "load should ignore stray XXKB_TEST_XVFB, got: {result:?}"
+        );
+    }
+
+    /// Conversely, a properly structured override like
+    /// `XXKB_GENERAL__TWO_STATE=true` MUST be honoured — that's the
+    /// raison d'être of the env layer.
+    #[test]
+    #[allow(unsafe_code)]
+    fn structured_double_underscore_env_override_is_applied() {
+        // SAFETY: same single-var mutation as above.
+        unsafe {
+            std::env::set_var("XXKB_GENERAL__TWO_STATE", "true");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let result = Config::load_from(&path);
+        unsafe {
+            std::env::remove_var("XXKB_GENERAL__TWO_STATE");
+        }
+        let cfg = result.expect("structured env override should load");
+        assert!(cfg.general.two_state);
     }
 }

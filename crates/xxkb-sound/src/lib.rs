@@ -158,68 +158,106 @@ pub fn build_player(cfg_mode: SoundMode, cfg_file: &str) -> Arc<dyn SoundPlayer>
 mod rodio_player {
     use std::io::Cursor;
     use std::path::Path;
-    use std::sync::Arc;
+    use std::sync::{
+        mpsc::{self, Sender},
+        Arc,
+    };
+    use std::thread::{self, JoinHandle};
 
-    use rodio::{OutputStream, OutputStreamHandle};
+    use parking_lot::Mutex;
+    use rodio::OutputStream;
     use xxkb_config::SoundMode;
 
     use super::{should_play, SoundError, SoundPlayer, Trigger, BUILTIN_CLICK_WAV};
 
-    /// Real player. Holds a single live `OutputStream` for the
-    /// lifetime of the daemon and re-uses its handle to spawn
-    /// `Sink`s for each click. We do *not* call `try_default()`
-    /// per-click — it allocates a fresh ALSA capture, which is what
-    /// caused the original implementation to occasionally drop the
-    /// first click after a long idle period.
+    /// Real player. The actual `cpal::Stream` (held by rodio's
+    /// `OutputStream`) is `!Send + !Sync` on Linux's ALSA / Pulse
+    /// backends, which is incompatible with [`SoundPlayer: Send +
+    /// Sync`]. So `RodioPlayer` does *not* hold the stream itself;
+    /// instead it spawns a dedicated audio thread that owns the
+    /// stream and listens on an `mpsc` channel for play requests.
+    /// `play()` just signals the thread.
+    ///
+    /// This also keeps `RodioPlayer` cheap to share across the
+    /// async runtime: the daemon clones an `Arc<dyn SoundPlayer>`
+    /// to every async task, and the lock contention on the sender
+    /// is negligible (one message per layout switch).
     pub struct RodioPlayer {
-        // `_stream` is held purely for its `Drop` lifetime: dropping
-        // the stream stops the audio thread. We never read from it
-        // directly.
-        _stream: OutputStream,
-        handle: OutputStreamHandle,
-        /// Pre-loaded audio buffer. Cheap to clone per click since
-        /// `Arc`'s clone is just a refcount bump.
-        bytes: Arc<Vec<u8>>,
+        /// Send (cloned) end into the audio thread. Wrapped in
+        /// `Mutex` so the type is `Sync` (`mpsc::Sender` is `Send`
+        /// but `!Sync`). Lock is held for microseconds at a time —
+        /// just long enough to push one message — so contention is
+        /// not a concern.
+        tx: Mutex<Sender<()>>,
+        /// Audio worker. Held only so its `Drop` joins the thread
+        /// when the player is dropped — we never poll it.
+        _thread: JoinHandle<()>,
     }
 
     impl RodioPlayer {
         /// Build, optionally loading sound bytes from `path`. Falls
-        /// back to the built-in click if `path` is `None`.
+        /// back to the built-in click if `path` is `None`. Returns
+        /// `Err` when no audio device can be opened *at all* — the
+        /// daemon then falls back to [`super::NullPlayer`].
         pub fn new(path: Option<&Path>) -> Result<Self, SoundError> {
-            let (stream, handle) =
-                OutputStream::try_default().map_err(|e| SoundError::Sink(e.to_string()))?;
-            let bytes = match path {
+            // Pre-flight: open an output stream synchronously so we
+            // can surface "no audio device" as a real error instead
+            // of a silent thread that died on init. The probe is
+            // dropped immediately; the worker opens its own.
+            {
+                let _probe =
+                    OutputStream::try_default().map_err(|e| SoundError::Sink(e.to_string()))?;
+            }
+
+            let bytes: Arc<Vec<u8>> = Arc::new(match path {
                 Some(p) => std::fs::read(p)?,
                 None => BUILTIN_CLICK_WAV.to_vec(),
-            };
+            });
+
+            let (tx, rx) = mpsc::channel::<()>();
+            let worker_bytes = bytes;
+            let thread = thread::Builder::new()
+                .name("xxkb-sound".to_owned())
+                .spawn(move || worker_loop(rx, worker_bytes))
+                .map_err(|e| SoundError::Sink(format!("spawn audio thread: {e}")))?;
+
             Ok(Self {
-                _stream: stream,
-                handle,
-                bytes: Arc::new(bytes),
+                tx: Mutex::new(tx),
+                _thread: thread,
             })
         }
     }
 
-    impl SoundPlayer for RodioPlayer {
-        fn play(&self, mode: SoundMode, trigger: Trigger) {
-            if !should_play(mode, trigger) {
+    /// Audio worker thread. Owns the (`!Send`) `OutputStream` for
+    /// its entire lifetime; receives play requests over `rx` and
+    /// hands a freshly decoded source to a detached `Sink` for each
+    /// click. Exits cleanly when all `Sender` clones are dropped.
+    fn worker_loop(rx: mpsc::Receiver<()>, bytes: Arc<Vec<u8>>) {
+        let (_stream, handle) = match OutputStream::try_default() {
+            Ok(s) => s,
+            Err(e) => {
+                // We pre-flighted in `new()`, so this only fires
+                // if the device disappeared between probe and
+                // worker init. Log once and exit; further `play()`
+                // calls become no-ops because the channel has no
+                // receiver.
+                tracing::warn!(error = %e, "audio worker: OutputStream unavailable");
                 return;
             }
+        };
+        while rx.recv().is_ok() {
             // Cursor needs `T: AsRef<[u8]>`. `Arc<Vec<u8>>` doesn't
             // satisfy that directly, so we deref+clone the inner
-            // Vec here. The buffer is ~2 KB so the copy is cheap;
-            // a pre-decoded `Source` cache would be faster but adds
-            // more state to manage and the ergonomics aren't worth
-            // it for a 50 ms click.
-            let cursor = Cursor::new(self.bytes.as_ref().clone());
+            // Vec here. The buffer is ~2 KB so the copy is cheap.
+            let cursor = Cursor::new(bytes.as_ref().clone());
             let decoder = match rodio::Decoder::new(cursor) {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to decode click sample");
-                    return;
+                    continue;
                 }
             };
-            match rodio::Sink::try_new(&self.handle) {
+            match rodio::Sink::try_new(&handle) {
                 Ok(sink) => {
                     sink.append(decoder);
                     // Detach so dropping the local `sink` doesn't
@@ -232,6 +270,28 @@ mod rodio_player {
             }
         }
     }
+
+    impl SoundPlayer for RodioPlayer {
+        fn play(&self, mode: SoundMode, trigger: Trigger) {
+            if !should_play(mode, trigger) {
+                return;
+            }
+            // If the worker is gone (shutdown / device disappeared)
+            // the send fails silently — that's the correct
+            // behaviour: no audio device, no click.
+            let _ = self.tx.lock().send(());
+        }
+    }
+
+    /// Compile-time guarantee that we don't accidentally regress
+    /// to a `RodioPlayer` that holds a non-Send `cpal::Stream`
+    /// directly. If a future refactor leaks a `!Send` type back
+    /// into the struct, this will fail to compile.
+    #[cfg(test)]
+    const _: fn() = || {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RodioPlayer>();
+    };
 }
 
 #[cfg(feature = "rodio-playback")]
